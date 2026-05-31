@@ -3,7 +3,16 @@
 A lightweight overlay HUD for Forza Horizon 6, made by blending the visual style of NFSU2's default HUD with Forza Horizon 6's aesthetic. Built with Tauri and Rust.  
 Displays a real-time tachometer, speed, gear indicator, and live HP/Torque/Boost gauges by reading Forza's telemetry data output.
 
+## Preview
+
+### App Icon
 ![HUD Preview](src-tauri/icons/Square150x150Logo.png)
+
+### Simple HUD
+![Simple HUD](screenshots/simple-hud.png)
+
+### Advanced HUD  
+![Advanced HUD](screenshots/advanced-hud.png)
 
 ## Features
 

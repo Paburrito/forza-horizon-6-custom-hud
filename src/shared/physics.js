@@ -32,19 +32,19 @@ let _physicsEnabled =
 // };
 
 const _springs = {
-    x:       { pos: 0, vel: 0, stiffness: 720, damping: 20 },
-    yBias:   { pos: 0, vel: 0, stiffness: 720, damping: 20 },
-    yWiggle: { pos: 0, vel: 0, stiffness: 880, damping: 21 },
-    z:       { pos: 0, vel: 0, stiffness: 680, damping: 19 },
-    roll:    { pos: 0, vel: 0, stiffness: 360, damping: 20 },
+    x:       { pos: 0, vel: 0, stiffness: 300, damping: 15 },
+    yBias:   { pos: 0, vel: 0, stiffness: 300, damping: 15 },
+    yWiggle: { pos: 0, vel: 0, stiffness: 340, damping: 16 },
+    z:       { pos: 0, vel: 0, stiffness: 280, damping: 14 },
+    roll:    { pos: 0, vel: 0, stiffness: 180, damping: 20 },
 };
 
 // ── Input scaling ─────────────────────────────────────────────────────────────
 // How strongly raw telemetry values (m/s²) map into visual units.
 // Tune these if the effect feels too strong or too subtle.
 const PHYSICS_SCALE = {
-    y:    1.5,    // m/s²  →  px   vertical wiggle (jumps, suspension)
-    z:    1.5,    // m/s²  →  px   depth (braking pulls forward, accel pushes away)
+    y:    1.3,    // m/s²  →  px   vertical wiggle (jumps, suspension)
+    z:    1.2,    // m/s²  →  px   depth (braking pulls forward, accel pushes away)
     roll: 0.0,    // m/s²  →  deg  lateral lean (0 = disabled until further tuning)
 };
 
