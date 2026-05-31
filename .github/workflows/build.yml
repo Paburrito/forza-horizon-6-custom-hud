@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -19,7 +22,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -33,7 +36,7 @@ jobs:
         run: npm install
 
       - name: Build & publish release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.5.18
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -51,6 +54,7 @@ jobs:
             See the [README](https://github.com/${{ github.repository }}#readme) for full instructions.
           releaseDraft: false
           prerelease: false
+          tauriScript: npm run tauri
 
       - name: Upload standalone exe
         uses: softprops/action-gh-release@v2
