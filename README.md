@@ -9,10 +9,10 @@ Displays a real-time tachometer, speed, gear indicator, and live HP/Torque/Boost
 ![HUD Preview](src-tauri/icons/Square150x150Logo.png)
 
 ### Simple HUD
-![Simple HUD](src/assets/screenshots/simple-hud.png)
+![Simple HUD](screenshots/simple-hud.png)
 
 ### Advanced HUD  
-![Advanced HUD](src/assets/screenshots/advanced-hud.png)
+![Advanced HUD](screenshots/advanced-hud.png)
 
 ## Features
 
