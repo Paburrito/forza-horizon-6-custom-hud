@@ -35,14 +35,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build & publish release
-        uses: tauri-apps/tauri-action@v0.5.18
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build
+        run: npm run tauri build
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Forza Horizon 6 - Custom HUD ${{ github.ref_name }}'
-          releaseBody: |
+          name: 'Forza Horizon 6 - Custom HUD ${{ github.ref_name }}'
+          body: |
             ## Forza Horizon 6 - Custom HUD ${{ github.ref_name }}
 
             **Two download options below:**
@@ -52,13 +52,6 @@ jobs:
             **Setup:** In Forza Horizon 6 go to Settings → HUD and Gameplay, enable Data Out, set IP to `127.0.0.1` and port to `5301`.
 
             See the [README](https://github.com/${{ github.repository }}#readme) for full instructions.
-          releaseDraft: false
+          draft: false
           prerelease: false
-          tauriScript: npm run tauri
-          includeUpdaterJson: false
-          uploadArtifacts: false
-
-      - name: Upload standalone exe
-        uses: softprops/action-gh-release@v2
-        with:
           files: src-tauri/target/release/Forza-Horizon-6-Custom-HUD-By-Paburrito.exe
