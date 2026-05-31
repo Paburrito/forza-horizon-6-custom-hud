@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Forza Horizon 6 Custom HUD - By Paburrito",
+  "version": "1.0.0",
+  "identifier": "com.paburrito.forzahud",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Forza Horizon 6 Custom HUD - By Paburrito",
+        "width": 750,
+        "height": 750,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": [
+        {
+          "identifier": "main-capability",
+          "windows": ["main"],
+          "permissions": [
+              "core:window:allow-set-position",
+              "core:window:allow-set-size",
+              "core:window:allow-outer-position",
+              "core:window:allow-outer-size",
+              "core:window:allow-inner-size",
+              "core:window:allow-inner-position",
+              "core:window:allow-available-monitors",
+              "core:window:allow-current-monitor",
+              "core:window:allow-primary-monitor",
+              "core:window:allow-monitor-from-point",
+              "core:window:allow-center",
+              "core:window:allow-set-resizable",
+              "core:window:allow-start-dragging",
+              "core:window:allow-close",
+              "core:window:default",
+              "core:window:allow-set-ignore-cursor-events"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

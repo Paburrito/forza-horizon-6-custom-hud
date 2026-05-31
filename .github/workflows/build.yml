@@ -1,0 +1,58 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Forza Horizon 6 - Custom HUD ${{ github.ref_name }}'
+          releaseBody: |
+            ## Forza Horizon 6 - Custom HUD ${{ github.ref_name }}
+
+            **Two download options below:**
+            - `...-setup.exe` — installer, sets up a Start Menu entry and uninstaller
+            - `Forza-Horizon-6-Custom-HUD-By-Paburrito.exe` — standalone, just run it, no install needed
+
+            **Setup:** In Forza Horizon 6 go to Settings → HUD and Gameplay, enable Data Out, set IP to `127.0.0.1` and port to `5301`.
+
+            See the [README](https://github.com/${{ github.repository }}#readme) for full instructions.
+          releaseDraft: false
+          prerelease: false
+
+      - name: Upload standalone exe
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/Forza-Horizon-6-Custom-HUD-By-Paburrito.exe

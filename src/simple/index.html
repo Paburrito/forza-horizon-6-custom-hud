@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html>
+<!--
+    simple/index.html — Simple HUD
+    Loaded dynamically by src/index.html (the root launcher).
+    Only contains HUD-specific layout, canvas drawing, sweep and tutorial.
+    All shared logic (WebSocket, physics, car learning, lockup, utils)
+    lives in src/shared/ and is exposed on window by the launcher.
+
+    NOTE ON PATHS: when injected by the launcher, relative asset paths
+    (Tachometer.png) are rewritten to be absolute by the launcher's
+    loadHud() URL resolver. See src/index.html loadHud().
+-->
+<head>
+    <meta charset="UTF-8">
+    <title>Simple HUD</title>
+    <style>
+        /* ── Fonts (declared here so file works standalone in dev) ────────── */
+        @font-face {
+            font-family: 'ForzaFont';
+            src: url('../assets/fonts/HelveticaNowDisplay-CnIta.otf') format('opentype');
+        }
+        @font-face {
+            font-family: 'ForzaGear';
+            src: url('../assets/fonts/HelveticaNowDisplay-CnMedIt.otf') format('opentype');
+        }
+
+        /* ── HUD layout ────────────────────────────────────────────────────── */
+        .hud-wrapper {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            justify-content: flex-end;
+            pointer-events: none;
+            padding: 30px;           /* physics buffer — room to bounce */
+            box-sizing: border-box;
+            z-index: 9000;
+        }
+
+        .hud-scaled-group {
+            width: 750px;
+            height: 750px;
+            transform: scale(var(--hud-scale, 1));
+            transform-origin: bottom right;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            perspective: 900px;
+            perspective-origin: center;
+            overflow: visible;
+        }
+
+        .hud-container {
+            position: relative;
+            width: 750px;
+            height: 750px;
+            transform-origin: bottom right;
+            pointer-events: all;
+            flex-shrink: 0;
+            will-change: transform;
+        }
+
+        .tach-container {
+            position: absolute;
+            left: 65px; top: 65px;
+            width: 621px; height: 621px;
+        }
+
+        .tach-bg {
+            position: absolute;
+            top: 0; left: 0;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0; left: 0;
+        }
+
+        .tach-container.hidden  { display: none; }
+        .tach-container.tut-hidden { visibility: hidden; opacity: 0; pointer-events: none; }
+
+        /* ── Wheel lockup ─────────────────────────────────────────────────── */
+        .lock-badge {
+            position: absolute;
+            top: 20px; right: 80px;   /* sits left of the LC badge */
+            font-family: 'ForzaGear', Arial;
+            font-size: 30px;
+            letter-spacing: 0.15em;
+            color: rgba(255, 255, 255, 0.15);
+            border: 2px solid rgba(255, 255, 255, 0.08);
+            padding: 4px 10px;
+            border-radius: 4px;
+            pointer-events: none;
+            transition: color 0.12s, border-color 0.12s, box-shadow 0.12s;
+        }
+        .lock-badge.medium {
+            color: rgba(255, 255, 255, 0.92);
+            border-color: rgba(255, 255, 255, 0.65);
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.25);
+        }
+        .lock-badge.danger {
+            color: rgb(255, 0, 136);
+            border-color: rgba(255, 0, 136, 0.8);
+            box-shadow: 0 0 14px rgba(255, 0, 136, 0.5);
+            animation: lc-pulse-fast 0.12s ease-in-out infinite;
+        }
+
+        /* ── Text overlays ─────────────────────────────────────────────────── */
+        .speed-text {
+            position: absolute;
+            bottom: 80px; right: 0;
+            font-size: 130px;
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: 700;
+            font-family: 'ForzaGear', Arial, sans-serif;
+            letter-spacing: 0.05em;
+            text-shadow: 5px 5px 5px rgba(20, 20, 20, 0.3);
+        }
+
+        #speedText { font-size: 130px; letter-spacing: 0.05em; }
+        #speedText span { display: inline-block; width: 1ch; text-align: center; }
+
+        .speed-unit {
+            position: absolute;
+            bottom: 50px; right: 30px;
+            font-size: 50px;
+            color: rgba(255, 255, 255, 0.9);
+            font-family: 'ForzaGear', Arial, sans-serif;
+            letter-spacing: 0.05em;
+            text-shadow: 5px 5px 5px rgba(20, 20, 20, 0.3);
+        }
+
+        .gear-text {
+            position: absolute;
+            top: 265px; right: 5px;
+            font-size: 85px;
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: 900;
+            font-family: 'ForzaGear', Arial, sans-serif;
+            letter-spacing: 0.05em;
+            text-shadow: 5px 5px 5px rgba(20, 20, 20, 0.3);
+        }
+
+        .gear-indicator {
+            position: absolute;
+            top: 310px; right: 100px;
+            width: 0; height: 0;
+            border-left: 25px solid transparent;
+            border-right: 25px solid transparent;
+            border-bottom: 40px solid rgba(255, 255, 255, 0.9);
+            opacity: 0;
+            transition: opacity 0.1s;
+        }
+        .gear-indicator.active { opacity: 1; }
+
+        /* -- Launch control */
+        .lc-badge {
+            position: absolute;
+            top: 20px; right: 0px;
+            font-family: 'ForzaGear', Arial;
+            font-size: 30px;
+            letter-spacing: 0.15em;
+            color: rgba(255, 0, 136, 0.25);
+            border: 2px solid rgba(255, 0, 136, 0.15);
+            padding: 4px 10px;
+            border-radius: 4px;
+            pointer-events: none;
+            transition: color 0.1s, border-color 0.1s, box-shadow 0.1s;
+        }
+        .lc-badge.armed {
+            color: rgb(255, 0, 136);
+            border-color: rgba(255, 0, 136, 0.8);
+            box-shadow: 0 0 14px rgba(255, 0, 136, 0.5);
+            animation: lc-pulse 0.5s ease-in-out infinite;
+        }
+        .lc-badge.launched {
+            color: rgb(255, 0, 136);
+            border-color: rgba(255, 0, 136, 0.8);
+            box-shadow: 0 0 14px rgba(255, 0, 136, 0.5);
+            animation: lc-pulse-fast 0.25s ease-in-out infinite;
+        }
+        @keyframes lc-pulse {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.3; }
+        }
+        @keyframes lc-pulse-fast {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.3; }
+        }
+
+        /* ── Tutorial breathe animation ────────────────────────────────────── */
+        @keyframes tb-breathe {
+            0%, 100% { background: rgba(255,255,255,0.12); box-shadow: none; }
+            50%       { background: rgba(255,0,136,0.65);  box-shadow: 0 0 8px rgba(255,0,136,0.7); }
+        }
+        .tb-highlight { animation: tb-breathe 1.1s ease-in-out infinite !important; }
+    </style>
+</head>
+
+<body>
+    <!-- ── HUD WRAPPER ────────────────────────────────────────────────────── -->
+    <div class="hud-wrapper">
+        <div class="hud-scaled-group">
+            <div class="hud-container">
+                <div class="tach-container" id="tachContainer">
+                    <img src="./Tachometer.png" class="tach-bg"
+                         width="621" height="621"
+                         style="position:absolute;top:64.5px;left:64.5px;">
+                    <canvas id="tachCanvasStatic" width="750" height="750" 
+                        style="position:absolute; top:0; left:0; pointer-events:none;"></canvas>
+                    <canvas id="tachCanvas" width="750" height="750"></canvas>
+                    <div class="lc-badge"       id="lc-badge">LC</div>
+                    <div class="gear-indicator" id="gearIndicator"></div>
+                    <div class="lock-badge"     id="lock-badge">LOCK</div>
+                    <div class="gear-text"      id="gearText">1</div>
+                    <div class="speed-text"     id="speedText">0</div>
+                    <div class="speed-unit"     id="speedUnit">KM/H</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== MAIN GAUGES SCRIPT ========== -->
+    <script>
+        var tachCanvas               = document.getElementById('tachCanvas');
+        var tachCtx                  = tachCanvas.getContext('2d');
+        var tachCanvasStatic         = document.getElementById('tachCanvasStatic');
+        var tachCtxS                 = tachCanvasStatic.getContext('2d');
+
+        var _tachStaticDirty         = true;
+        var _tachStaticLastRedline   = 0;
+        var _tachStaticLastVisualMax = 0;
+        var _tachStaticLastSweep     = Infinity;
+        var _tachStaticLastAlpha     = 1.0;
+
+        // Cached gradients — one red + one white per gauge radius, created once
+        var _gradBoostRed = null, _gradBoostWhite = null;
+        var _gradHPRed    = null, _gradHPWhite    = null;
+        var _gradTQRed    = null, _gradTQWhite    = null;
+
+        // ── Canvas dimensions ──────────────────────────────────────────────
+        var CANVAS_SIZE   = 750;
+        var TACH_CENTER_X = 374.5;
+        var TACH_CENTER_Y = 374.5;
+
+        // ── Colors ─────────────────────────────────────────────────────────
+        var COLOR_WHITE_SOLID        = 'rgba(255,255,255,1)';
+        var COLOR_WHITE_SOLID_DIM    = 'rgba(255,255,255,0.9)';
+        var COLOR_WHITE_SOLID_DIMMER = 'rgba(255,255,255,0.7)';
+        var COLOR_WHITE_GLOW_START   = 'rgba(255,255,255,0.40)';
+        var COLOR_WHITE_GLOW_END     = 'rgba(255,255,255,0)';
+        var COLOR_WHITE_SHADOW_DIM   = 'rgba(255,255,255,0.4)';
+        var COLOR_RED_SOLID          = 'rgba(255, 0, 136,1)';
+        var COLOR_RED_SOLID_DIM      = 'rgba(255, 0, 136,0.9)';
+        var COLOR_RED_SOLID_DIMMER   = 'rgba(255, 0, 136,0.7)';
+        var COLOR_RED_GLOW_START     = 'rgba(255, 0, 136,0.40)';
+        var COLOR_RED_GLOW_END       = 'rgba(255, 0, 136,0)';
+        var COLOR_RED_SHADOW_DIM     = 'rgba(255, 0, 136,0.4)';
+
+        // ── Angles ─────────────────────────────────────────────────────────
+        var TACH_START             = 90;
+        var TACH_END               = 315;
+        var BOOST_HP_TQ_START_END_GAP = 45;
+        var HP_TQ_GAP              = 3;
+        var TACH_MIDPOINT          = TACH_START + (TACH_END - TACH_START) / 2;
+        var TACH_START_ANGLE       = TACH_START * Math.PI / 180;
+        var TACH_END_ANGLE         = TACH_END   * Math.PI / 180;
+        var TACH_SWEEP             = TACH_END_ANGLE - TACH_START_ANGLE;
+
+        // ── Radii ──────────────────────────────────────────────────────────
+        var THROTTLE_RADIUS    = 137;
+        var RPM_OUTER_RADIUS   = 295;
+        var RPM_INNER_RADIUS   = 270;
+        var HP_RADIUS          = 345;
+        var TQ_RADIUS          = 345;
+        var BOOST_OUTER_RADIUS = THROTTLE_RADIUS + 5;
+        var BOOST_INNER_RADIUS = THROTTLE_RADIUS - 5;
+
+        // ── Gauge angles ───────────────────────────────────────────────────
+        var BOOST_MAX_ANGLE = (TACH_END - BOOST_HP_TQ_START_END_GAP)   * Math.PI / 180;
+        var BOOST_MIN_ANGLE = (TACH_START + BOOST_HP_TQ_START_END_GAP) * Math.PI / 180;
+        var BOOST_SWEEP     = BOOST_MAX_ANGLE - BOOST_MIN_ANGLE;
+        var HP_START_ANGLE  = (TACH_START + BOOST_HP_TQ_START_END_GAP) * Math.PI / 180;
+        var HP_END_ANGLE    = (TACH_MIDPOINT - HP_TQ_GAP / 2)          * Math.PI / 180;
+        var HP_SWEEP        = HP_END_ANGLE - HP_START_ANGLE;
+        var TQ_START_ANGLE  = (TACH_MIDPOINT + HP_TQ_GAP / 2)          * Math.PI / 180;
+        var TQ_END_ANGLE    = (TACH_END - BOOST_HP_TQ_START_END_GAP)   * Math.PI / 180;
+        var TQ_SWEEP        = TQ_END_ANGLE - TQ_START_ANGLE;
+
+        // ── Segments ───────────────────────────────────────────────────────
+        var BOOST_SEGMENTS = 5;
+        var HP_SEGMENTS    = 5;
+        var TQ_SEGMENTS    = 5;
+
+        // ── Line widths ────────────────────────────────────────────────────
+        var SEGMENT_SOLID_WIDTH     = 6;
+        var SEGMENT_GLOW_WIDTH      = 55;
+        var RPM_SEGMENT_SOLID_WIDTH = 8;
+        var RPM_SEGMENT_GLOW_WIDTH  = 100;
+
+        // ── Gaps (radians) ─────────────────────────────────────────────────
+        var RPM_SEGMENT_GAP   = 0.01;
+        var BOOST_SEGMENT_GAP = 0.02;
+        var HP_SEGMENT_GAP    = 0.01;
+        var TQ_SEGMENT_GAP    = 0.01;
+
+        // ── Needle dimensions ──────────────────────────────────────────────
+        var BOOST_NEEDLE_LENGTH     = 30;
+        var BOOST_NEEDLE_BASE_WIDTH = 10;
+        var BOOST_NEEDLE_MID_WIDTH  = 6;
+        var BOOST_NEEDLE_TIP_WIDTH  = 3;
+        var HP_TQ_NEEDLE_LENGTH     = 35;
+
+        // ── Effects ────────────────────────────────────────────────────────
+        var SHADOW_BLUR = 10;
+
+        // ── Fonts ──────────────────────────────────────────────────────────
+        var FONT_RPM_NUMBERS = '45px ForzaFont, Arial';
+        var FONT_LABELS      = 'bold 30px ForzaFont, Arial';
+
+        // ── Text offsets ───────────────────────────────────────────────────
+        var TEXT_OFFSET_RPM    = 30;
+        var TEXT_OFFSET_LABELS = 10;
+
+        // ── Learning defaults ──────────────────────────────────────────────
+        var DEFAULT_MAX_RPM     = 10000;
+        var DEFAULT_MAX_BOOST   = 5;
+        var DEFAULT_MAX_VACUUM  = 2;
+        var DEFAULT_MAX_HP      = 5;
+        var DEFAULT_MIN_HP      = 5;
+        var DEFAULT_MAX_TQ      = 5;
+        var DEFAULT_MIN_TQ      = 5;
+
+        // ── Gauge state ────────────────────────────────────────────────────
+        var currentMaxRPM     = DEFAULT_MAX_RPM;
+        var sessionMaxBoost   = DEFAULT_MAX_BOOST;
+        var sessionMaxVacuum  = DEFAULT_MAX_VACUUM;
+        var sessionMaxHP      = DEFAULT_MAX_HP;
+        var sessionMinHP      = DEFAULT_MIN_HP;
+        var sessionMaxTQ      = DEFAULT_MAX_TQ;
+        var sessionMinTQ      = DEFAULT_MIN_TQ;
+        var _gaugeLastRace    = 0;   // tracks race state for gauge resets
+        var _gaugeLastCarOrd  = null;
+        var _gaugeLastMaxRPM  = 0;
+
+        // ── Initialize Tachometer Gradients ───────────────────────────────────────────────
+        function initTachGradients() {
+            function makeGrad(cx, r) {
+                var red = cx.createRadialGradient(TACH_CENTER_X, TACH_CENTER_Y, r - 20, TACH_CENTER_X, TACH_CENTER_Y, r);
+                red.addColorStop(0, COLOR_RED_GLOW_START); red.addColorStop(1, COLOR_RED_GLOW_END);
+                var white = cx.createRadialGradient(TACH_CENTER_X, TACH_CENTER_Y, r - 20, TACH_CENTER_X, TACH_CENTER_Y, r);
+                white.addColorStop(0, COLOR_WHITE_GLOW_START); white.addColorStop(1, COLOR_WHITE_GLOW_END);
+                return [red, white];
+            }
+            [_gradBoostRed, _gradBoostWhite] = makeGrad(tachCtxS, THROTTLE_RADIUS);
+            [_gradHPRed,    _gradHPWhite]    = makeGrad(tachCtxS, HP_RADIUS);
+            [_gradTQRed,    _gradTQWhite]    = makeGrad(tachCtxS, TQ_RADIUS);
+        }
+
+        // Call this once after tachCtxS is ready, before the first frame
+        initTachGradients();
+
+        var cachedGradients = { normal: null, redline: null };
+
+        function createGradients() {
+            const r = (RPM_OUTER_RADIUS + RPM_INNER_RADIUS) / 1.83;
+            const normal = tachCtx.createRadialGradient(TACH_CENTER_X, TACH_CENTER_Y, 246, TACH_CENTER_X, TACH_CENTER_Y, r);
+            normal.addColorStop(0, COLOR_WHITE_GLOW_START);
+            normal.addColorStop(1, COLOR_WHITE_GLOW_END);
+            const redline = tachCtx.createRadialGradient(TACH_CENTER_X, TACH_CENTER_Y, 246, TACH_CENTER_X, TACH_CENTER_Y, r);
+            redline.addColorStop(0, COLOR_RED_GLOW_START);
+            redline.addColorStop(1, COLOR_RED_GLOW_END);
+            return { normal, redline };
+        }
+        cachedGradients = createGradients();
+        
+
+        // ── Draw Static Tachometer ─────────────────────────────────────────────────
+        function drawStaticTachometer(redlineRpm, visualMax, sweepRpm, fadeAlpha) {
+            tachCtxS.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+            const segments        = Math.ceil(visualMax / 1000);
+            const anglePerSegment = TACH_SWEEP / segments;
+
+            // ── RPM segments ─────────────────────────────────────────────────────────
+            for (let i = 0; i < segments; i++) {
+                if (i * 1000 > sweepRpm) continue;
+                const startAngle   = TACH_START_ANGLE + (i * anglePerSegment) + RPM_SEGMENT_GAP;
+                const endAngle     = TACH_START_ANGLE + ((i + 1) * anglePerSegment) - RPM_SEGMENT_GAP;
+                const segStartRpm  = i * 1000;
+                const segEndRpm    = (i + 1) * 1000;
+                const fullyRed     = segStartRpm >= redlineRpm;
+                const splitHere    = segStartRpm < redlineRpm && segEndRpm > redlineRpm;
+                const redlineAngle = TACH_START_ANGLE + (redlineRpm / visualMax) * TACH_SWEEP;
+
+                const drawArc = (from, to, isRed) => {
+                    if (to <= from) return;
+                    tachCtxS.strokeStyle = isRed ? cachedGradients.redline : cachedGradients.normal;
+                    tachCtxS.lineWidth   = RPM_SEGMENT_GLOW_WIDTH;
+                    tachCtxS.beginPath();
+                    tachCtxS.arc(TACH_CENTER_X, TACH_CENTER_Y, (RPM_OUTER_RADIUS + RPM_INNER_RADIUS) / 2, from, to);
+                    tachCtxS.stroke();
+                    tachCtxS.strokeStyle = isRed ? COLOR_RED_SOLID : COLOR_WHITE_SOLID;
+                    tachCtxS.lineWidth   = RPM_SEGMENT_SOLID_WIDTH;
+                    tachCtxS.beginPath();
+                    tachCtxS.arc(TACH_CENTER_X, TACH_CENTER_Y, RPM_OUTER_RADIUS, from, to);
+                    tachCtxS.stroke();
+                };
+
+                if (splitHere) {
+                    drawArc(startAngle, redlineAngle, false);
+                    drawArc(redlineAngle, endAngle, true);
+                } else {
+                    drawArc(startAngle, endAngle, fullyRed);
+                }
+            }
+
+            // ── RPM numbers ───────────────────────────────────────────────────────────
+            tachCtxS.font = FONT_RPM_NUMBERS;
+            tachCtxS.textAlign = 'center'; tachCtxS.textBaseline = 'middle';
+            const tr = RPM_OUTER_RADIUS - TEXT_OFFSET_RPM;
+            for (let i = 0; i <= segments; i++) {
+                if (i > 0 && i * 1000 > sweepRpm) continue;
+                const angle = TACH_START_ANGLE + (i * anglePerSegment);
+                tachCtxS.fillStyle = i * 1000 >= redlineRpm ? COLOR_RED_SOLID : COLOR_WHITE_SOLID;
+                tachCtxS.fillText(i.toString(),
+                    TACH_CENTER_X + tr * Math.cos(angle),
+                    TACH_CENTER_Y + tr * Math.sin(angle));
+            }
+
+            // ── Secondary gauges (fade alpha) ─────────────────────────────────────────
+            tachCtxS.save();
+            tachCtxS.globalAlpha = fadeAlpha;
+
+            // Boost segments + labels
+            const boostAPSeg     = BOOST_SWEEP / BOOST_SEGMENTS;
+            const BOOST_ZERO_ACT = BOOST_MIN_ANGLE + boostAPSeg;
+            for (let i = 0; i < BOOST_SEGMENTS; i++) {
+                const sc  = BOOST_MIN_ANGLE + (i * boostAPSeg) + (boostAPSeg / 2);
+                const ss  = Math.max(BOOST_MIN_ANGLE, sc - boostAPSeg / 2 + BOOST_SEGMENT_GAP);
+                const se  = Math.min(BOOST_MAX_ANGLE, sc + boostAPSeg / 2 - BOOST_SEGMENT_GAP);
+                const isV = (i === 0);
+                tachCtxS.strokeStyle = isV ? _gradBoostRed : _gradBoostWhite;
+                tachCtxS.lineWidth   = SEGMENT_GLOW_WIDTH;
+                tachCtxS.beginPath(); tachCtxS.arc(TACH_CENTER_X, TACH_CENTER_Y, THROTTLE_RADIUS, ss, se); tachCtxS.stroke();
+                tachCtxS.strokeStyle = isV ? COLOR_RED_SOLID_DIM : COLOR_WHITE_SOLID_DIM;
+                tachCtxS.lineWidth   = SEGMENT_SOLID_WIDTH;
+                tachCtxS.beginPath(); tachCtxS.arc(TACH_CENTER_X, TACH_CENTER_Y, BOOST_OUTER_RADIUS, ss, se); tachCtxS.stroke();
+            }
+            const mr = THROTTLE_RADIUS - TEXT_OFFSET_LABELS;
+            tachCtxS.font = FONT_LABELS; tachCtxS.textAlign = 'center'; tachCtxS.textBaseline = 'middle';
+            tachCtxS.fillStyle = COLOR_WHITE_SOLID_DIM;
+            tachCtxS.fillText('−', TACH_CENTER_X + mr * Math.cos(BOOST_MIN_ANGLE),  TACH_CENTER_Y + mr * Math.sin(BOOST_MIN_ANGLE));
+            tachCtxS.fillText('0', TACH_CENTER_X + mr * Math.cos(BOOST_ZERO_ACT),   TACH_CENTER_Y + mr * Math.sin(BOOST_ZERO_ACT));
+            tachCtxS.fillText('+', TACH_CENTER_X + mr * Math.cos(BOOST_MAX_ANGLE),  TACH_CENTER_Y + mr * Math.sin(BOOST_MAX_ANGLE));
+
+            // HP segments + labels
+            const hpAPSeg       = HP_SWEEP / HP_SEGMENTS;
+            const HP_ZERO_ANGLE = HP_START_ANGLE + hpAPSeg;
+            for (let i = 0; i < HP_SEGMENTS; i++) {
+                const sc  = HP_START_ANGLE + (i * hpAPSeg) + (hpAPSeg / 2);
+                const ss  = Math.max(HP_START_ANGLE, sc - hpAPSeg / 2 + HP_SEGMENT_GAP);
+                const se  = Math.min(HP_END_ANGLE,   sc + hpAPSeg / 2 - HP_SEGMENT_GAP);
+                const isF = (i === 0);
+                tachCtxS.strokeStyle = isF ? _gradHPRed : _gradHPWhite;
+                tachCtxS.lineWidth   = SEGMENT_GLOW_WIDTH;
+                tachCtxS.beginPath(); tachCtxS.arc(TACH_CENTER_X, TACH_CENTER_Y, HP_RADIUS, ss, se); tachCtxS.stroke();
+                tachCtxS.strokeStyle = isF ? COLOR_RED_SOLID_DIM : COLOR_WHITE_SOLID_DIM;
+                tachCtxS.lineWidth   = SEGMENT_SOLID_WIDTH;
+                tachCtxS.beginPath(); tachCtxS.arc(TACH_CENTER_X, TACH_CENTER_Y, HP_RADIUS, ss, se); tachCtxS.stroke();
+            }
+            tachCtxS.font = FONT_LABELS; tachCtxS.textAlign = 'center'; tachCtxS.textBaseline = 'middle';
+            tachCtxS.fillStyle = COLOR_WHITE_SOLID_DIMMER;
+            tachCtxS.fillText('HP', TACH_CENTER_X + (HP_RADIUS+30) * Math.cos(HP_ZERO_ANGLE-0.1),
+                                    TACH_CENTER_Y + (HP_RADIUS+30) * Math.sin(HP_ZERO_ANGLE-0.1));
+            tachCtxS.fillStyle = COLOR_WHITE_SOLID_DIM;
+            tachCtxS.fillText('0',  TACH_CENTER_X + (HP_RADIUS-20) * Math.cos(HP_ZERO_ANGLE),
+                                    TACH_CENTER_Y + (HP_RADIUS-20) * Math.sin(HP_ZERO_ANGLE));
+
+            // TQ segments + labels
+            const tqAPSeg       = TQ_SWEEP / TQ_SEGMENTS;
+            const TQ_ZERO_ANGLE = TQ_START_ANGLE + tqAPSeg;
+            for (let i = 0; i < TQ_SEGMENTS; i++) {
+                const sc  = TQ_START_ANGLE + (i * tqAPSeg) + (tqAPSeg / 2);
+                const ss  = Math.max(TQ_START_ANGLE, sc - tqAPSeg / 2 + TQ_SEGMENT_GAP);
+                const se  = Math.min(TQ_END_ANGLE,   sc + tqAPSeg / 2 - TQ_SEGMENT_GAP);
+                const isF = (i === 0);
+                tachCtxS.strokeStyle = isF ? _gradTQRed : _gradTQWhite;
+                tachCtxS.lineWidth   = SEGMENT_GLOW_WIDTH;
+                tachCtxS.beginPath(); tachCtxS.arc(TACH_CENTER_X, TACH_CENTER_Y, TQ_RADIUS, ss, se); tachCtxS.stroke();
+                tachCtxS.strokeStyle = isF ? COLOR_RED_SOLID_DIM : COLOR_WHITE_SOLID_DIM;
+                tachCtxS.lineWidth   = SEGMENT_SOLID_WIDTH;
+                tachCtxS.beginPath(); tachCtxS.arc(TACH_CENTER_X, TACH_CENTER_Y, TQ_RADIUS, ss, se); tachCtxS.stroke();
+            }
+            tachCtxS.font = FONT_LABELS; tachCtxS.textAlign = 'center'; tachCtxS.textBaseline = 'middle';
+            tachCtxS.fillStyle = COLOR_WHITE_SOLID_DIMMER;
+            tachCtxS.fillText('TQ', TACH_CENTER_X + (TQ_RADIUS+20) * Math.cos(TQ_ZERO_ANGLE-0.15),
+                                    TACH_CENTER_Y + (TQ_RADIUS+20) * Math.sin(TQ_ZERO_ANGLE-0.15));
+            tachCtxS.fillStyle = COLOR_WHITE_SOLID_DIM;
+            tachCtxS.fillText('0',  TACH_CENTER_X + (TQ_RADIUS-20) * Math.cos(TQ_ZERO_ANGLE),
+                                    TACH_CENTER_Y + (TQ_RADIUS-20) * Math.sin(TQ_ZERO_ANGLE));
+
+            tachCtxS.restore();
+        }
+
+        // ── Draw Tachometer ─────────────────────────────────────────────────
+        function drawTachometer(data, redlineRpm) {
+
+            // ── Session learning + dirty flag ─────────────────────────────────────────
+            let resetGauges = false;
+            if (data.isRaceOn === 1 && _gaugeLastRace === 0)                                             resetGauges = true;
+            if (data.carOrdinal !== undefined && data.carOrdinal !== _gaugeLastCarOrd
+                && _gaugeLastCarOrd !== null)                                                            resetGauges = true;
+            if (data.maxRpm !== _gaugeLastMaxRPM && _gaugeLastMaxRPM !== 0)                              resetGauges = true;
+            if (resetGauges) {
+                sessionMaxBoost = DEFAULT_MAX_BOOST; sessionMaxVacuum = DEFAULT_MAX_VACUUM;
+                sessionMaxHP    = DEFAULT_MAX_HP;    sessionMinHP     = DEFAULT_MIN_HP;
+                sessionMaxTQ    = DEFAULT_MAX_TQ;    sessionMinTQ     = DEFAULT_MIN_TQ;
+                _tachStaticDirty = true;
+            }
+            _gaugeLastRace   = data.isRaceOn;
+            _gaugeLastCarOrd = data.carOrdinal;
+            _gaugeLastMaxRPM = data.maxRpm;
+
+            const isMoving = data.speed > 10;
+            if (isMoving) {
+                if (data.boost > sessionMaxBoost)                                                         sessionMaxBoost  = data.boost;
+                if (data.boost < 0 && Math.abs(data.boost) > sessionMaxVacuum)                           sessionMaxVacuum = Math.abs(data.boost);
+                if (data.power > sessionMaxHP)                                                            sessionMaxHP     = data.power;
+                if (data.power  < 0 && Math.abs(data.power)  > sessionMinHP && Math.abs(data.power)  < 150) sessionMinHP = Math.abs(data.power);
+                if (data.torque > sessionMaxTQ)                                                           sessionMaxTQ     = data.torque;
+                if (data.torque < 0 && Math.abs(data.torque) > sessionMinTQ && Math.abs(data.torque) < 150) sessionMinTQ = Math.abs(data.torque);
+            }
+
+            const segments     = Math.ceil(currentMaxRPM / 1000);
+            const visualMaxRPM = segments * 1000;
+            const sweepRpm     = window.sweepRevealRpm ?? Infinity;
+            const fadeAlpha    = window.gaugesFadeAlpha ?? 1.0;
+
+            // ── Static canvas: redraw only when structure changes ─────────────────────
+            if (_tachStaticDirty
+                || redlineRpm   !== _tachStaticLastRedline
+                || visualMaxRPM !== _tachStaticLastVisualMax
+                || sweepRpm     !== _tachStaticLastSweep
+                || fadeAlpha    !== _tachStaticLastAlpha) {
+                drawStaticTachometer(redlineRpm, visualMaxRPM, sweepRpm, fadeAlpha);
+                _tachStaticDirty         = false;
+                _tachStaticLastRedline   = redlineRpm;
+                _tachStaticLastVisualMax = visualMaxRPM;
+                _tachStaticLastSweep     = sweepRpm;
+                _tachStaticLastAlpha     = fadeAlpha;
+            }
+
+            // ── Dynamic canvas: needles only ──────────────────────────────────────────
+            tachCtx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+            const boostAPSeg     = BOOST_SWEEP / BOOST_SEGMENTS;
+            const BOOST_ZERO_ACT = BOOST_MIN_ANGLE + boostAPSeg;
+            const hpAPSeg        = HP_SWEEP / HP_SEGMENTS;
+            const HP_ZERO_ANGLE  = HP_START_ANGLE + hpAPSeg;
+            const tqAPSeg        = TQ_SWEEP / TQ_SEGMENTS;
+            const TQ_ZERO_ANGLE  = TQ_START_ANGLE + tqAPSeg;
+
+            tachCtx.save();
+            tachCtx.globalAlpha = fadeAlpha;
+
+            // Boost needle
+            const boostAngle = data.boost < 0
+                ? BOOST_ZERO_ACT - (Math.min(1, Math.abs(data.boost) / sessionMaxVacuum) * boostAPSeg)
+                : BOOST_ZERO_ACT + (Math.min(1, data.boost / sessionMaxBoost) * (BOOST_MAX_ANGLE - BOOST_ZERO_ACT));
+            const bCos  = Math.cos(boostAngle), bSin  = Math.sin(boostAngle);
+            const bpCos = Math.cos(boostAngle + Math.PI/2), bpSin = Math.sin(boostAngle + Math.PI/2);
+            const bLen  = THROTTLE_RADIUS - 10;
+            const bMid  = { x: TACH_CENTER_X + bLen*0.7*bCos, y: TACH_CENTER_Y + bLen*0.7*bSin };
+            const bTip  = { x: TACH_CENTER_X + bLen*bCos,     y: TACH_CENTER_Y + bLen*bSin };
+            const isNegB = data.boost < 0;
+            tachCtx.fillStyle   = isNegB ? COLOR_RED_SOLID_DIMMER : COLOR_WHITE_SOLID_DIMMER;
+            tachCtx.shadowBlur  = SHADOW_BLUR;
+            tachCtx.shadowColor = isNegB ? COLOR_RED_SHADOW_DIM : COLOR_WHITE_SHADOW_DIM;
+            tachCtx.beginPath();
+            tachCtx.moveTo(TACH_CENTER_X + (BOOST_NEEDLE_BASE_WIDTH/2)*bpCos, TACH_CENTER_Y + (BOOST_NEEDLE_BASE_WIDTH/2)*bpSin);
+            tachCtx.lineTo(bMid.x + (BOOST_NEEDLE_MID_WIDTH/2)*bpCos,  bMid.y + (BOOST_NEEDLE_MID_WIDTH/2)*bpSin);
+            tachCtx.lineTo(bTip.x + (BOOST_NEEDLE_TIP_WIDTH/2)*bpCos,  bTip.y + (BOOST_NEEDLE_TIP_WIDTH/2)*bpSin);
+            tachCtx.lineTo(bTip.x - (BOOST_NEEDLE_TIP_WIDTH/2)*bpCos,  bTip.y - (BOOST_NEEDLE_TIP_WIDTH/2)*bpSin);
+            tachCtx.lineTo(bMid.x - (BOOST_NEEDLE_MID_WIDTH/2)*bpCos,  bMid.y - (BOOST_NEEDLE_MID_WIDTH/2)*bpSin);
+            tachCtx.lineTo(TACH_CENTER_X - (BOOST_NEEDLE_BASE_WIDTH/2)*bpCos, TACH_CENTER_Y - (BOOST_NEEDLE_BASE_WIDTH/2)*bpSin);
+            tachCtx.closePath(); tachCtx.fill(); tachCtx.shadowBlur = 0;
+            tachCtx.beginPath(); tachCtx.arc(bTip.x, bTip.y, BOOST_NEEDLE_TIP_WIDTH/2, 0, Math.PI*2); tachCtx.fill();
+
+            // HP needle
+            const hpAngle = data.power < 0
+                ? HP_ZERO_ANGLE - (Math.min(1, Math.abs(data.power) / sessionMinHP) * hpAPSeg)
+                : HP_ZERO_ANGLE + (Math.min(1, data.power / sessionMaxHP) * (HP_END_ANGLE - HP_ZERO_ANGLE));
+            const isNegHP = data.power < 0;
+            tachCtx.strokeStyle = isNegHP ? COLOR_RED_SOLID : COLOR_WHITE_SOLID;
+            tachCtx.lineWidth   = SEGMENT_SOLID_WIDTH;
+            tachCtx.shadowBlur  = SHADOW_BLUR; tachCtx.shadowColor = isNegHP ? COLOR_RED_SOLID_DIM : COLOR_WHITE_SOLID_DIM;
+            tachCtx.beginPath();
+            tachCtx.moveTo(TACH_CENTER_X + (HP_RADIUS - HP_TQ_NEEDLE_LENGTH) * Math.cos(hpAngle),
+                        TACH_CENTER_Y + (HP_RADIUS - HP_TQ_NEEDLE_LENGTH) * Math.sin(hpAngle));
+            tachCtx.lineTo(TACH_CENTER_X + (HP_RADIUS + HP_TQ_NEEDLE_LENGTH/10) * Math.cos(hpAngle),
+                        TACH_CENTER_Y + (HP_RADIUS + HP_TQ_NEEDLE_LENGTH/10) * Math.sin(hpAngle));
+            tachCtx.stroke(); tachCtx.shadowBlur = 0;
+
+            // TQ needle
+            const tqAngle = data.torque < 0
+                ? TQ_ZERO_ANGLE - (Math.min(1, Math.abs(data.torque) / sessionMinTQ) * tqAPSeg)
+                : TQ_ZERO_ANGLE + (Math.min(1, data.torque / sessionMaxTQ) * (TQ_END_ANGLE - TQ_ZERO_ANGLE));
+            const isNegTQ = data.torque < 0;
+            tachCtx.strokeStyle = isNegTQ ? COLOR_RED_SOLID : COLOR_WHITE_SOLID;
+            tachCtx.lineWidth   = SEGMENT_SOLID_WIDTH;
+            tachCtx.shadowBlur  = SHADOW_BLUR; tachCtx.shadowColor = isNegTQ ? COLOR_RED_SOLID_DIMMER : COLOR_WHITE_SOLID_DIMMER;
+            tachCtx.beginPath();
+            tachCtx.moveTo(TACH_CENTER_X + (TQ_RADIUS - HP_TQ_NEEDLE_LENGTH) * Math.cos(tqAngle),
+                        TACH_CENTER_Y + (TQ_RADIUS - HP_TQ_NEEDLE_LENGTH) * Math.sin(tqAngle));
+            tachCtx.lineTo(TACH_CENTER_X + (TQ_RADIUS + HP_TQ_NEEDLE_LENGTH/10) * Math.cos(tqAngle),
+                        TACH_CENTER_Y + (TQ_RADIUS + HP_TQ_NEEDLE_LENGTH/10) * Math.sin(tqAngle));
+            tachCtx.stroke(); tachCtx.shadowBlur = 0;
+
+            tachCtx.restore();
+
+            // ── RPM needle (outside fade scope — always full alpha) ───────────────────
+            const rpmPercent  = data.rpm / visualMaxRPM;
+            const needleAngle = TACH_START_ANGLE + (rpmPercent * TACH_SWEEP);
+            const nLen        = 270;
+            const nCos        = Math.cos(needleAngle), nSin = Math.sin(needleAngle);
+            const npCos       = Math.cos(needleAngle + Math.PI/2), npSin = Math.sin(needleAngle + Math.PI/2);
+            const nMid = { x: TACH_CENTER_X + nLen*0.7*nCos, y: TACH_CENTER_Y + nLen*0.7*nSin };
+            const nTip = { x: TACH_CENTER_X + nLen*nCos,     y: TACH_CENTER_Y + nLen*nSin };
+            tachCtx.fillStyle   = COLOR_WHITE_SOLID_DIM;
+            tachCtx.shadowBlur  = 15; tachCtx.shadowColor = COLOR_WHITE_SHADOW_DIM;
+            tachCtx.beginPath();
+            tachCtx.moveTo(TACH_CENTER_X + 10*npCos, TACH_CENTER_Y + 10*npSin);
+            tachCtx.lineTo(nMid.x + 5*npCos,  nMid.y + 5*npSin);
+            tachCtx.lineTo(nTip.x + 3*npCos,  nTip.y + 3*npSin);
+            tachCtx.lineTo(nTip.x - 3*npCos,  nTip.y - 3*npSin);
+            tachCtx.lineTo(nMid.x - 5*npCos,  nMid.y - 5*npSin);
+            tachCtx.lineTo(TACH_CENTER_X - 10*npCos, TACH_CENTER_Y - 10*npSin);
+            tachCtx.closePath(); tachCtx.fill(); tachCtx.shadowBlur = 0;
+            tachCtx.beginPath(); tachCtx.arc(nTip.x, nTip.y, 3, 0, Math.PI*2); tachCtx.fill();
+            tachCtx.beginPath(); tachCtx.arc(TACH_CENTER_X, TACH_CENTER_Y, 12.5, 0, Math.PI*2); tachCtx.fill();
+        }
+        
+    </script>
+
+    <!-- ========== LOCKUP DISPLAY ========== -->
+    <script>
+        function updateLockDisplay(data) {
+            const badge = document.getElementById('lock-badge');
+            if (!badge) return;
+
+            var delta = window.computeLockupDelta
+                ? window.computeLockupDelta(data)
+                : 0;
+            var pct = delta * 100;
+
+            badge.classList.remove('medium', 'danger');
+            if (pct >= 75) {
+                badge.classList.add('danger');
+            } else if (pct >= 30) {
+                badge.classList.add('medium');
+            }
+        }
+    </script>
+
+    <!-- ========== SWEEP ANIMATION ========== -->
+    <script>
+        window.sweepActive    = false;
+        window.sweepRevealRpm = Infinity;
+        window.gaugesFadeAlpha = 1.0;
+
+        var SWEEP_UP_MS    = 1500;
+        var SWEEP_HOLD_MS  = 350;
+        var SWEEP_DOWN_MS  = 1500;
+        var SWEEP_TOTAL_MS = SWEEP_UP_MS + SWEEP_HOLD_MS + SWEEP_DOWN_MS;
+        var GAUGES_FADE_MS = 1000;
+
+        function easeInOut(t)      { return t < 0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
+        function easeOutOvershoot(t) { const c1=0.35,c3=c1+1; return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2); }
+        function easeInCubic(t)    { return t*t*t; }
+
+        function startGaugesFadeIn() {
+            window.gaugesFadeAlpha = 0;
+            let start = null;
+            function fadeLoop(ts) {
+                if (!start) start = ts;
+                const t = Math.min((ts - start) / GAUGES_FADE_MS, 1);
+                window.gaugesFadeAlpha = easeInCubic(t);
+                if (t < 1) requestAnimationFrame(fadeLoop);
+                else window.gaugesFadeAlpha = 1.0;
+            }
+            requestAnimationFrame(fadeLoop);
+        }
+
+        function triggerSweep(maxRpm, idleRpm, knownRedline) {
+            window.sweepActive     = true;
+            window.sweepRevealRpm  = 0;
+            window.gaugesFadeAlpha = 0;
+
+            // Freeze physics targets — springs decay naturally to neutral
+            if (window.physicsTargets) {
+                Object.keys(window.physicsTargets).forEach(k => window.physicsTargets[k] = 0);
+            }
+
+            document.getElementById('tachContainer').classList.remove('hidden');
+            window.setSpeedDisplay?.(0);
+            document.getElementById('gearText').textContent  = '-';
+            document.getElementById('gearIndicator').classList.remove('active');
+
+            const rawMax   = (maxRpm && maxRpm > 0) ? maxRpm : (currentMaxRPM || 8000);
+            const sweepMax = Math.ceil(rawMax / 1000) * 1000;
+            const restRpm  = (idleRpm && idleRpm > 0) ? idleRpm : 800;
+            const sweepRedline = knownRedline ?? sweepMax * 0.85;
+            let startTime  = null;
+
+            function sweepLoop(ts) {
+                if (!startTime) startTime = ts;
+                const elapsed = ts - startTime;
+                let fakeRpm;
+
+                if (elapsed < SWEEP_UP_MS) {
+                    const t = easeInOut(elapsed / SWEEP_UP_MS);
+                    fakeRpm = t * sweepMax;
+                    window.sweepRevealRpm = fakeRpm;
+                } else if (elapsed < SWEEP_UP_MS + SWEEP_HOLD_MS) {
+                    fakeRpm = sweepMax;
+                    window.sweepRevealRpm = Infinity;
+                } else if (elapsed < SWEEP_TOTAL_MS) {
+                    const t = (elapsed - SWEEP_UP_MS - SWEEP_HOLD_MS) / SWEEP_DOWN_MS;
+                    fakeRpm = Math.max(0, restRpm + (1 - easeOutOvershoot(t)) * (sweepMax - restRpm));
+                    window.sweepRevealRpm = Infinity;
+                } else {
+                    window.sweepActive    = false;
+                    window.sweepRevealRpm = Infinity;
+                    drawTachometer({
+                        isRaceOn: 1, rpm: restRpm, maxRpm: sweepMax,
+                        speed: 0, gear: 0, throttle: 0, brake: 0,
+                        boost: 0, power: 0, torque: 0,
+                        carOrdinal: window.getCurrentCarOrdinal?.() ?? -1,
+                    }, sweepRedline);
+                    startGaugesFadeIn();
+                    return;
+                }
+
+                drawTachometer({
+                    isRaceOn: 1, rpm: fakeRpm, maxRpm: sweepMax,
+                    speed: 0, gear: 0, throttle: 0, brake: 0,
+                    boost: 0, power: 0, torque: 0,
+                    carOrdinal: window.getCurrentCarOrdinal?.() ?? -1,
+                }, sweepRedline);
+                requestAnimationFrame(sweepLoop);
+            }
+            requestAnimationFrame(sweepLoop);
+        }
+    </script>
+
+    <script>
+        // ========== DEMO MODE ==========
+        var demoMode = false;
+        var demoInterval = null;
+        var demoRPM = 0, demoGear = 1, demoDirection = 1;
+
+        function startDemo() {
+            demoRPM = 0; demoGear = 1; demoDirection = 1;
+            document.getElementById('tachContainer').classList.remove('hidden');
+
+            demoInterval = setInterval(() => {
+                demoRPM += 100 * demoDirection;
+                if (demoRPM >= 9000) demoDirection = -1;
+                if (demoRPM <= 0) { demoDirection = 1; demoGear = (demoGear % 6) + 1; }
+
+                const rpmPercent = demoRPM / 9000;
+                const mockData = {
+                    isRaceOn: 1,
+                    rpm: demoRPM, maxRpm: 9000,
+                    speed: rpmPercent * 55.6,
+                    gear: demoGear,
+                    throttle: rpmPercent,
+                    brake: 0,
+                    boost: (rpmPercent - 0.5) * 20,
+                    power: 50 + (rpmPercent * 450),
+                    torque: 100 + (rpmPercent * 400),
+                    carOrdinal: -1,
+                    wheelSpeedFL: 0, wheelSpeedFR: 0,
+                    wheelSpeedRL: 0, wheelSpeedRR: 0,
+                };
+
+                drawTachometer(mockData, 5000);
+                window.setSpeedDisplay?.(Math.round((window.convertSpeed ?? (v => v * 3.6))(mockData.speed)));
+                updateLockDisplay(mockData);
+
+                const gearEl = document.getElementById('gearText');
+                gearEl.textContent = mockData.gear.toString();
+                document.getElementById('gearIndicator')
+                    .classList.toggle('active', mockData.rpm / 5000 >= 1.0);
+            }, 100);
+        }
+
+        function stopDemo() {
+            clearInterval(demoInterval);
+            demoInterval = null;
+        }
+
+        // Settings button — flips state
+        window.addEventListener('demo:toggle', function() {
+            if (window._activeHud !== 'simple') return;
+            demoMode = !demoMode;
+            window.demoActive = demoMode;
+            _updateDemoUI(demoMode);
+            if (demoMode) { startDemo(); document.getElementById('titlebar')?.classList.add('always-visible'); window.showNotification?.('Demo mode ON 🎮'); }
+            else          { stopDemo();  if (!window.tutorialActive) document.getElementById('titlebar')?.classList.remove('always-visible'); window.showNotification?.('Demo mode OFF'); }
+        });
+
+        // HUD switch: start without flipping state
+        window.addEventListener('demo:start', function() {
+            if (window._activeHud !== 'simple') return;
+            if (!demoMode) {
+                demoMode = true;
+                startDemo();
+                _updateDemoUI(true);
+                document.getElementById('titlebar')?.classList.add('always-visible');
+            }
+        });
+
+        // HUD switch: stop without flipping state (no activeHud check — stops whatever is running)
+        window.addEventListener('demo:stop', function() {
+            if (demoMode) {
+                stopDemo();
+                demoMode = false;
+                _updateDemoUI(false);
+                if (!window.tutorialActive) document.getElementById('titlebar')?.classList.remove('always-visible');
+            }
+        });
+
+        function _updateDemoUI(on) {
+            var statusEl = document.getElementById('demo-status');
+            if (statusEl) statusEl.textContent = on ? 'ON' : 'OFF';
+            var btn = document.getElementById('demo-btn');
+            if (btn) btn.style.background = on ? 'rgba(255,0,136,0.3)' : '';
+        }
+
+        
+
+    </script>
+
+    <!-- ========== TUTORIAL ENGINE ========== -->
+    <script>
+        var TUT_DONE_KEY  = 'forza_hud_tutorial_done';
+        var TUT_PHASE_KEY = 'forza_hud_tutorial_phase';
+
+        window.tutorialActive = false;
+        var tutPhase2Pending  = false;
+
+        var isTutDone   = () => localStorage.getItem(TUT_DONE_KEY) === 'true';
+        var getTutPhase = () => localStorage.getItem(TUT_PHASE_KEY) || null;
+        var setTutPhase = (p) => p === null ? localStorage.removeItem(TUT_PHASE_KEY) : localStorage.setItem(TUT_PHASE_KEY, p);
+        var markTutDone = () => { localStorage.setItem(TUT_DONE_KEY, 'true'); setTutPhase(null); };
+
+        var hideHud = () => document.getElementById('tachContainer').classList.add('tut-hidden');
+        var showHud = () => document.getElementById('tachContainer').classList.remove('tut-hidden');
+
+        function showTutPanel(message, buttons) {
+            const panel  = document.getElementById('tutorial-panel');
+            const btnDiv = document.getElementById('tut-buttons');
+            document.getElementById('tut-message').textContent = message;
+            btnDiv.innerHTML = '';
+            for (const b of buttons) {
+                const btn = document.createElement('button');
+                btn.className = 'tut-btn' + (b.primary ? ' primary' : '');
+                btn.textContent = b.label;
+                btn.onclick = b.action;
+                btnDiv.appendChild(btn);
+            }
+            panel.style.display = 'flex';
+        }
+
+        function hideTutPanel() {
+            document.getElementById('tutorial-panel').style.display = 'none';
+        }
+
+        function setButtonHighlight(id) {
+            ['settings-btn', 'lock-btn', 'hud-toggle-btn'].forEach(bid =>
+                document.getElementById(bid)?.classList.remove('tb-highlight')
+            );
+            if (id) document.getElementById(id)?.classList.add('tb-highlight');
+        }
+
+        function tutWiggleAndClose(callback) {
+            const panel = document.getElementById('tutorial-panel');
+            panel.classList.add('tut-wiggle');
+            setTimeout(() => {
+                panel.classList.remove('tut-wiggle');
+                hideTutPanel();
+                window.tutorialActive = false;
+                setButtonHighlight(null);
+                document.getElementById('titlebar')?.classList.remove('always-visible');
+                if (callback) callback();
+            }, 650);
+        }
+
+        function buildPhase1(next) {
+            return [
+                // 0 - welcome
+                () => {
+                    hideHud();
+                    showTutPanel(
+                        "Hey! Welcome to the Forza Horizon 6 Custom HUD! First time running, let me walk you through things real quick.",
+                        [{ label: "Let's go!", primary: true, action: () => { showHud(); next(1); } }]
+                    );
+                },
+                // 1 - reassurance
+                () => showTutPanel(
+                    "Don't worry, this setup only happens once. After this you'll go straight into the HUD every time.",
+                    [{ label: "Good to know", primary: true, action: () => next(2) }]
+                ),
+                // 2 - apply preset
+                async () => {
+                    if (window.applyResolutionPreset) await window.applyResolutionPreset();
+                    showTutPanel(
+                        "I went ahead and sized the app for your screen. You can always drag and resize it wherever feels right.",
+                        [{ label: "Nice!", primary: true, action: () => next(3) }]
+                    );
+                },
+                // 3 - intro to controls
+                () => showTutPanel(
+                    "There are a few buttons on the titlebar at the top. Let me walk you through each one.",
+                    [{ label: "Show me", primary: true, action: () => next(4) }]
+                ),
+                // 4 - settings gear
+                () => {
+                    setButtonHighlight('settings-btn');
+                    showTutPanel(
+                        "⚙ The Settings button is your control panel — speed units, HUD motion physics, notifications, hotkeys, and the connection info for setting up Forza are all in there.",
+                        [{ label: "Got it", primary: true, action: () => next(5) }]
+                    );
+                },
+                // 5 - HUD toggle
+                () => {
+                    setButtonHighlight('hud-toggle-btn');
+                    showTutPanel(
+                        "This button lets you switch between the Simple and Advanced HUD views. You're in Simple right now — Advanced is still cooking.",
+                        [{ label: "Makes sense", primary: true, action: () => next(6) }]
+                    );
+                },
+                // 6 - lock button pt 1
+                () => {
+                    setButtonHighlight('lock-btn');
+                    showTutPanel(
+                        "🔓 Once you're happy with the position, hit Lock. The border disappears and the window becomes click-through so you can play as if the HUD isn't there.",
+                        [{ label: "Ok", primary: true, action: () => next(7) }]
+                    );
+                },
+                // 7 - lock button pt 2
+                () => showTutPanel(
+                    "Fair warning: once locked you can't interact with the HUD directly. To unlock, click the app in your taskbar and press Ctrl+L.",
+                    [{ label: "Understood", primary: true, action: () => { setButtonHighlight(null); next(8); } }]
+                ),
+                // 8 - open the game
+                () => showTutPanel(
+                    "Before we can use the HUD, we need to configure Forza Horizon 6. Go ahead and open the game, then hit Ok when you're ready.",
+                    [{ label: "Ok, game is open", primary: true, action: () => next(9) }]
+                ),
+                // 9 - data out
+                () => showTutPanel(
+                    "Head to Settings → HUD and Gameplay, find 'Data Out' and toggle it ON.",
+                    [{ label: "Done", primary: true, action: () => next(10) }]
+                ),
+                // 10 - IP and port
+                () => showTutPanel(
+                    "Just below that, set Data Out IP Address to 127.0.0.1 and Data Out IP Port to 5301. This stays local on your PC — it's how the HUD reads Forza's telemetry.",
+                    [{ label: "All set", primary: true, action: () => next(11) }]
+                ),
+                // 11 - speedometer
+                () => showTutPanel(
+                    "Lastly: find the Speedometer setting and turn it off so you're not running two HUDs at once.",
+                    [{ label: "Done", primary: true, action: () => next(12) }]
+                ),
+                // 12 - fork
+                () => showTutPanel(
+                    "That's it, you're all set! Want me to pop back in once you're on the road to show you how the rev limiter learning works?",
+                    [
+                        { label: "Sure, show me", primary: true, action: () => {
+                            setTutPhase('drive');
+                            tutWiggleAndClose(() => window.showNotification?.("Great! See you on the road!", 5000));
+                        }},
+                        { label: "I'm good, thanks", action: () => {
+                            markTutDone();
+                            tutWiggleAndClose(() => window.showNotification?.("Great! Have fun racing!", 4000));
+                        }}
+                    ]
+                ),
+            ];
+        }
+
+        function runPhase1() {
+            window.tutorialActive = true;
+            document.getElementById('titlebar')?.classList.add('always-visible');
+            const steps = buildPhase1((i) => steps[i]());
+            steps[0]();
+        }
+
+        function runPhase2() {
+            window.tutorialActive = true;
+            document.getElementById('titlebar')?.classList.add('always-visible');
+            tutPhase2Pending = false;
+            showTutPanel(
+                "Good to see you on the road! Let's teach the HUD your car's rev limiter. It's best with manual transmission — put it in first gear and bounce off the limiter for a couple of seconds, then lift.",
+                [{ label: "OK", primary: true, action: () => {
+                    showTutPanel("Go ahead — I'm listening...", []);
+                    window.tutWaitingForLimiter = true;
+                }}]
+            );
+        }
+
+        function onLimiterLearned() {
+            if (!window.tutWaitingForLimiter) return;
+            window.tutWaitingForLimiter = false;
+            showTutPanel(
+                "Got it! The HUD now knows exactly where the redline sits. It remembers every car you drive — one bounce per car is all it needs. If you retune, Ctrl+R resets it.",
+                [{ label: "Nice!", primary: true, action: () => showTutPanel(
+                    "The HP, Torque and Boost gauges adapt to each car automatically. Keep an eye on Torque especially — when it starts dropping toward the third white segment (~75% peak), it's time to shift up and stay in the powerband.",
+                    [{ label: "Got it, thanks!", primary: true, action: () => {
+                        markTutDone();
+                        tutWiggleAndClose(() => window.showNotification?.("That's all! Have fun racing!", 4000));
+                    }}]
+                )}]
+            );
+        }
+
+        function runPhase2Reentry() {
+            window.tutorialActive = true;
+            document.getElementById('titlebar')?.classList.add('always-visible');
+            showTutPanel(
+                "Hey! The app closed before we got to the fun part. Want me to walk you through the rev limiter learning?",
+                [
+                    { label: "Show me", primary: true, action: runPhase2 },
+                    { label: "I'm good", action: () => { markTutDone(); tutWiggleAndClose(); } }
+                ]
+            );
+        }
+
+        window.tutCheckPhase2 = (data) => {
+            if (isTutDone() || getTutPhase() !== 'drive') return;
+            if (window.tutorialActive || tutPhase2Pending) return;
+            if (data.isRaceOn !== 1) return;
+            tutPhase2Pending = true;
+            setTimeout(runPhase2, 2000);
+        };
+
+        window.tutOnLimiterLearned = onLimiterLearned;
+
+        function initTutorial() {
+            if (isTutDone()) return;
+            const phase = getTutPhase();
+            if (!phase)              runPhase1();
+            else if (phase === 'drive') runPhase2Reentry();
+        }
+
+        // Listen for replay request from root launcher's settings panel
+        window.addEventListener('tutorial:replay', () => {
+            localStorage.removeItem(TUT_DONE_KEY);
+            localStorage.removeItem(TUT_PHASE_KEY);
+            runPhase1();
+        });
+
+        initTutorial();
+    </script>
+
+    <!-- ========== HUD FRAME LISTENER ========== -->
+    <script>
+        // State local to the simple HUD
+        var _frameLastRaceState    = 0;
+        var _frameSweepCarOrdinal  = null;
+        var _frameValidGear        = 1;
+        var _frameLastMaxRpm       = 8000;
+        var _frameLastIdleRpm      = 800;
+
+        // hud:frame is dispatched by the root launcher after shared processors run.
+        // It carries { data, redlineRpm } — no WebSocket or learning logic needed here.
+        window.addEventListener('hud:frame', (e) => {
+            if (window._activeHud !== 'simple') return;
+            const { data, redlineRpm } = e.detail;
+            const tachContainer = document.getElementById('tachContainer');
+            if (!tachContainer) return;
+
+            // Cache for sweep
+            if (data.maxRpm)  _frameLastMaxRpm  = data.maxRpm;
+            if (data.idleRpm) _frameLastIdleRpm = data.idleRpm;
+            if (data.maxRpm && data.maxRpm !== currentMaxRPM) currentMaxRPM = data.maxRpm;
+
+            if (data.isRaceOn === 0) {
+                tachContainer.classList.add('hidden');
+                _frameLastRaceState = 0;
+                return;
+            }
+            tachContainer.classList.remove('hidden');
+
+            // First-ever start — fire the ignition sweep
+            if (data.isRaceOn === 1 && _frameLastRaceState === 0) {
+                if (_frameSweepCarOrdinal === null) {
+                    triggerSweep(data.maxRpm, data.idleRpm);
+                    _frameSweepCarOrdinal = data.carOrdinal;
+                }
+            }
+            _frameLastRaceState = data.isRaceOn;
+
+            window.tutCheckPhase2?.(data);
+
+            if (!window.sweepActive) {
+                drawTachometer(data, redlineRpm);
+                window.setSpeedDisplay?.(Math.round((window.convertSpeed ?? (v => v * 3.6))(data.speed)));
+                updateLockDisplay(data);
+
+                const gearEl        = document.getElementById('gearText');
+                const gearIndicator = document.getElementById('gearIndicator');
+                if (data.gear <= 10) _frameValidGear = data.gear;
+                gearEl.textContent  = _frameValidGear === 0 ? 'R' : _frameValidGear.toString();
+
+                gearIndicator.classList.toggle('active', data.rpm / redlineRpm >= 1.0);
+            }
+        });
+
+        // Car changed — fire sweep and show notification for unknown cars
+        window.addEventListener('car:changed', (e) => {
+            const { carOrdinal, isKnown, redline, maxRpm, idleRpm } = e.detail;
+            if (carOrdinal === 0) return;
+            if (!isKnown) window.showNotification?.("New car detected! 🏎️ Rev it up so I can learn the limiter!", 6000);
+            if (_frameSweepCarOrdinal !== null) {
+                triggerSweep(maxRpm, idleRpm, redline);
+            }
+            _frameSweepCarOrdinal = carOrdinal;
+        });
+
+        // Limiter learned — notify tutorial
+        window.addEventListener('car:learned', () => {
+            window.tutOnLimiterLearned?.();
+        });
+
+        // Speed unit changed — update the unit label
+        window.addEventListener('speedunit:changed', (e) => {
+            const el = document.getElementById('speedUnit');
+            if (el) el.textContent = e.detail.metric ? 'KM/H' : 'MPH';
+        });
+        
+        // Apply saved unit on initial HUD load
+        var _unitEl = document.getElementById('speedUnit');
+        if (_unitEl) _unitEl.textContent = window.getSpeedUnit?.() ?? 'KM/H';
+
+        window.addEventListener('lc:state', (e) => {
+            if (window._activeHud !== 'simple') return;
+            const badge = document.getElementById('lc-badge');
+            if (!badge) return;
+            badge.classList.toggle('armed',    e.detail.armed);
+            badge.classList.toggle('launched', e.detail.launched);
+        });
+    </script>
+
+</body>
+</html>
