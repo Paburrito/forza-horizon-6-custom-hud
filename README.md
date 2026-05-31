@@ -74,6 +74,16 @@ src-tauri/target/release/Forza-Horizon-6-Custom-HUD-By-Paburrito.exe
 - [Rust](https://www.rust-lang.org/) - UDP telemetry listener and WebSocket bridge
 - Vanilla HTML/CSS/JS - HUD rendering via Canvas API
 
+## Windows SmartScreen Warning
+
+When running the exe for the first time Windows may show a SmartScreen warning.
+This is normal for unsigned open source software. Click **"More info"** then
+**"Run anyway"** to launch the app. The full source code is available in this
+repository if you want to verify what you're running, and while I'll say no funny
+business are happening here, I'd still ask you to check the files, mostly so you as the user
+can truly be sure that this is the legit code involved in the generation of the executable file, 
+and moreover the resulting file will be hosted on the release section and not some random mediafire download link for example.
+
 ## Credits
 
 Made by **Paburrito** with way too much caffeine, ADHD meds and genuine love for Forza Horizon 6 and an old great that was Need For Speed Underground 2.
