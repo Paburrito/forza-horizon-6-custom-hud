@@ -55,6 +55,8 @@ jobs:
           releaseDraft: false
           prerelease: false
           tauriScript: npm run tauri
+          includeUpdaterJson: false
+          uploadArtifacts: false
 
       - name: Upload standalone exe
         uses: softprops/action-gh-release@v2
