@@ -1,6 +1,6 @@
 [package]
 name = "Forza-Horizon-6-Custom-HUD-By-Paburrito"
-version = "1.0.1"
+version = "1.0.2"
 description = "A custom HUD views for Forza Horizon 6"
 authors = ["you"]
 edition = "2021"

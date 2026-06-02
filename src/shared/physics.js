@@ -32,11 +32,11 @@ let _physicsEnabled =
 // };
 
 const _springs = {
-    x:       { pos: 0, vel: 0, stiffness: 300, damping: 15 },
-    yBias:   { pos: 0, vel: 0, stiffness: 300, damping: 15 },
-    yWiggle: { pos: 0, vel: 0, stiffness: 340, damping: 16 },
-    z:       { pos: 0, vel: 0, stiffness: 280, damping: 14 },
-    roll:    { pos: 0, vel: 0, stiffness: 180, damping: 20 },
+    x:       { pos: 0, vel: 0, stiffness: 600, damping: 15 },
+    yBias:   { pos: 0, vel: 0, stiffness: 600, damping: 15 },
+    yWiggle: { pos: 0, vel: 0, stiffness: 680, damping: 16 },
+    z:       { pos: 0, vel: 0, stiffness: 560, damping: 14 },
+    roll:    { pos: 0, vel: 0, stiffness: 360, damping: 20 },
 };
 
 // ── Input scaling ─────────────────────────────────────────────────────────────

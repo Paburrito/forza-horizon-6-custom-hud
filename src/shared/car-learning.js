@@ -1,22 +1,18 @@
 // =============================================================================
 // shared/car-learning.js
-// Per-car rev limiter learning and car change detection.
+// Per-car/per-tune rev limiter learning with confidence scoring.
+//
+// Tune identity = carOrdinal + maxRpm (rounded) + numCylinders
+// Each unique combination gets its own database entry and confidence score.
+// Default redline = maxRpm * 0.93 until confidence reaches TRUSTED (3).
+// Learning is fully passive — no tutorial step or deliberate input required.
 //
 // Dispatches these CustomEvents on window:
-//   'car:changed'  — { detail: { carOrdinal, carKey, isKnown } }
-//   'car:learned'  — { detail: { carOrdinal, carKey, limiter, redline } }
+//   'car:changed'  — { detail: { carOrdinal, carKey, isKnown, redline, maxRpm } }
+//   'car:learned'  — { detail: { carOrdinal, carKey, limiter, redline, confidence } }
 //
 // Exports processLearning(data) → { redlineRpm, currentCarOrdinal }
 // Call this on every telemetry frame before rendering.
-//
-// Usage:
-//   import { initCarLearning, processLearning } from '../shared/car-learning.js';
-//   initCarLearning();
-//
-//   window.addEventListener('telemetry', (e) => {
-//       const { redlineRpm } = processLearning(e.detail);
-//       drawTachometer(e.detail, redlineRpm);
-//   });
 // =============================================================================
 
 // ── Persistent car database ───────────────────────────────────────────────────
@@ -27,158 +23,218 @@ function _saveDatabase() {
     localStorage.setItem('forza_car_redlines', JSON.stringify(carDatabase));
 }
 
+// ── Tune identity ─────────────────────────────────────────────────────────────
+// Round maxRpm to nearest 100 to avoid floating point key mismatches
+// e.g. 16499.99 and 16500.01 both become 16500
+function _tuneKey(carOrdinal, maxRpm, numCylinders) {
+    const rpm = Math.round((maxRpm ?? 0) / 100) * 100;
+    return `car_${carOrdinal}_${rpm}_cyl${numCylinders ?? 0}`;
+}
+
+// ── Confidence thresholds ─────────────────────────────────────────────────────
+const CONFIDENCE_TRUSTED    = 3;     // >= this: value is reliable, stop learning
+const DEFAULT_REDLINE_RATIO = 0.93;  // fallback until confidence is earned
+
 // ── State ─────────────────────────────────────────────────────────────────────
-export let currentCarOrdinal = null;
+export let currentCarOrdinal   = null;
 export let lastSweepCarOrdinal = null;
 
-let _hasLearnedThisSession = new Set();
-let _lastRaceState = 0;
-let _currentMaxRPM = 10000;
+let _currentCarKey  = null;
+let _currentMaxRpm  = 0;
+let _lastRaceState  = 0;
 
-// Limiter learning state machine
-let _isLearning    = false;
-let _peakRpm       = 0;
-let _startGear     = 0;
-let _avgSpeed      = 0;
-let _speedSamples  = [];
-let _lastPowerSign = 1;
-let _flipCount     = 0;
-let _lastFlipTime  = 0;
+// Active learning state
+let _isLearning   = false;
+let _peakRpm      = 0;
+let _startGear    = 0;
+let _speedSamples = [];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function _defaultRedline(maxRpm) {
+    return Math.round((maxRpm ?? 10000) * DEFAULT_REDLINE_RATIO);
+}
+
+function _getOrCreateEntry(carKey, maxRpm) {
+    if (!carDatabase[carKey]) {
+        carDatabase[carKey] = {
+            limiter:    Math.round(maxRpm ?? 10000),
+            redline:    _defaultRedline(maxRpm),
+            maxRpm:     maxRpm,
+            confidence: 0,
+            timestamp:  Date.now(),
+        };
+    }
+    return carDatabase[carKey];
+}
 
 // ── Public — update lastSweepCarOrdinal after a sweep fires ──────────────────
 export function markSweepFired(carOrdinal) {
     lastSweepCarOrdinal = carOrdinal;
 }
 
-// ── Public — force re-learn current car ───────────────────────────────────────
+// ── Public — force re-learn current tune ──────────────────────────────────────
 export function forceRelearn() {
-    if (currentCarOrdinal === null) return;
-    const carKey = `car_${currentCarOrdinal}`;
-    _hasLearnedThisSession.delete(carKey);
-    _flipCount = 0;
+    if (!_currentCarKey) return;
+    if (carDatabase[_currentCarKey]) {
+        carDatabase[_currentCarKey].confidence = 0;
+        _saveDatabase();
+    }
     _isLearning = false;
-    window.showNotification?.('Re-learning mode activated! 🔄 Bounce the limiter.', 4000);
+    _peakRpm    = 0;
+    window.showNotification?.('Re-learning mode activated! 🔄 Drive to the limiter.', 4000);
 }
 
 // ── Main processor — call once per telemetry frame ────────────────────────────
 export function processLearning(data) {
+
+    // ── Guard: ignore invalid frames (cutscenes, menus, paused) ──────────────
+    if (!data.carOrdinal || data.carOrdinal === 0 ||
+        !data.maxRpm     || data.maxRpm     === 0) {
+        return {
+            redlineRpm:        _currentMaxRpm * DEFAULT_REDLINE_RATIO || 8000,
+            currentCarOrdinal,
+        };
+    }
+
     // ── Race state transition ─────────────────────────────────────────────────
     if (data.isRaceOn === 1 && _lastRaceState === 0) {
-        _hasLearnedThisSession.clear();
-        console.log('🏁 Race started — learning re-enabled');
+        console.log('🏁 Race started');
     }
     _lastRaceState = data.isRaceOn;
 
-    // ── Car change detection ──────────────────────────────────────────────────
-    if (data.carOrdinal !== undefined && data.carOrdinal !== 0 && data.carOrdinal !== currentCarOrdinal) {
-        currentCarOrdinal = data.carOrdinal;
-        _isLearning = false;
-        _peakRpm    = 0;
-        _flipCount  = 0;
+    // ── Tune / car change detection ───────────────────────────────────────────
+    const newKey     = _tuneKey(data.carOrdinal, data.maxRpm, data.numCylinders);
+    const tuneChanged = newKey !== _currentCarKey;
 
-        const carKey = `car_${currentCarOrdinal}`;
-        const isKnown = !!carDatabase[carKey];
+    if (tuneChanged) {
+        _isLearning    = false;
+        _peakRpm       = 0;
+        _speedSamples  = [];
 
-        console.log(`🏎️ Car changed: ${currentCarOrdinal}${isKnown ? ` (known: ${carDatabase[carKey].limiter} RPM)` : ' (new)'}`);
+        const carChanged    = data.carOrdinal !== currentCarOrdinal;
+        currentCarOrdinal   = data.carOrdinal;
+        _currentCarKey      = newKey;
+        _currentMaxRpm      = data.maxRpm;
+
+        const entry   = _getOrCreateEntry(newKey, data.maxRpm);
+        const isKnown = entry.confidence >= CONFIDENCE_TRUSTED;
+
+        console.log(
+            `🏎️ ${carChanged ? 'Car' : 'Tune'} changed → ${newKey} ` +
+            `(${isKnown
+                ? `confidence ${entry.confidence}, redline ${entry.redline} RPM`
+                : `estimate ${entry.redline} RPM (confidence ${entry.confidence})`})`
+        );
 
         window.dispatchEvent(new CustomEvent('car:changed', {
-            detail: { 
-                carOrdinal: currentCarOrdinal, 
-                carKey, 
+            detail: {
+                carOrdinal: currentCarOrdinal,
+                carKey:     newKey,
                 isKnown,
-                redline: isKnown ? carDatabase[carKey].redline : null,
-                maxRpm:  data.maxRpm,
-                idleRpm: data.idleRpm,
+                redline:    entry.redline,
+                maxRpm:     data.maxRpm,
+                idleRpm:    data.idleRpm,
             }
         }));
     }
 
-    if (data.maxRpm && data.maxRpm !== _currentMaxRPM) {
-        _currentMaxRPM = data.maxRpm;
+    _currentMaxRpm = data.maxRpm;
+
+    const entry      = _getOrCreateEntry(_currentCarKey, data.maxRpm);
+    const redlineRpm = entry.redline;
+
+    // ── Skip learning if already trusted ─────────────────────────────────────
+    if (entry.confidence >= CONFIDENCE_TRUSTED) {
+        return { redlineRpm, currentCarOrdinal };
     }
 
-    const carKey   = `car_${currentCarOrdinal}`;
-    const carData  = carDatabase[carKey];
-    const redlineRpm = carData ? carData.redline : (data.maxRpm ?? _currentMaxRPM) * 0.85;
+    // ── Limiter zone detection ────────────────────────────────────────────────
+    // Only genuine limiter contact: high RPM + demanding throttle + positive power
+    // Filters out: engine braking (power < 0), coasting, rev matching
+    const inLimiterZone =
+        data.rpm      > data.maxRpm * 0.90 &&
+        data.throttle > 0.90               &&
+        data.power    > 0                  &&
+        data.gear     > 0;
 
-    // ── Power flip detection (limiter bounce) ─────────────────────────────────
-    const currentPowerSign = data.power >= 0 ? 1 : -1;
-    const powerFlipped =
-        currentPowerSign !== _lastPowerSign &&
-        data.throttle > 0.95 &&
-        data.gear > 0;
-    _lastPowerSign = currentPowerSign;
-
-    if (powerFlipped && data.rpm > data.maxRpm * 0.7) {
-        const now = Date.now();
-        _flipCount = (now - _lastFlipTime < 3000) ? _flipCount + 1 : 1;
-        _lastFlipTime = now;
-
-        if (
-            _flipCount >= 6 &&
-            !_isLearning &&
-            !_hasLearnedThisSession.has(carKey) &&
-            data.isRaceOn === 1
-        ) {
-            _isLearning  = true;
-            _peakRpm     = data.rpm;
-            _startGear   = data.gear;
-            _avgSpeed    = data.speed;
-            _speedSamples = [data.speed];
-            window.showNotification?.('🔴 Sustained limiter bounce detected! Learning...');
-        }
+    // Start a learning window when entering the zone
+    if (inLimiterZone && !_isLearning) {
+        _isLearning   = true;
+        _peakRpm      = data.rpm;
+        _startGear    = data.gear;
+        _speedSamples = [data.speed];
     }
 
-    if (data.throttle < 0.9 || data.rpm < data.maxRpm * 0.7) _flipCount = 0;
-
-    // ── Active learning ───────────────────────────────────────────────────────
+    // ── Active learning window ────────────────────────────────────────────────
     if (_isLearning) {
         if (data.rpm > _peakRpm) _peakRpm = data.rpm;
 
         _speedSamples.push(data.speed);
         if (_speedSamples.length > 10) _speedSamples.shift();
-        _avgSpeed = _speedSamples.reduce((a, b) => a + b) / _speedSamples.length;
+        const avgSpeed = _speedSamples.reduce((a, b) => a + b) / _speedSamples.length;
 
-        const done =
-            data.gear   !== _startGear              ||   // gear changed
-            data.throttle < 0.9                     ||   // throttle lifted
-            Math.abs(data.speed - _avgSpeed) > 10   ||   // speed drifted
-            data.rpm < _peakRpm - 500;                   // rpm dropped
+        // Clean exit: left the limiter zone naturally
+        const exitedCleanly =
+            data.gear     !== _startGear   ||
+            data.throttle  < 0.90          ||
+            data.power     <= 0            ||
+            data.rpm       < _peakRpm - 500;
 
-        if (done) {
-            const detectedLimiter  = Math.round(_peakRpm);
-            const existingLimiter  = carDatabase[carKey]?.limiter || 0;
-            const difference       = Math.abs(detectedLimiter - existingLimiter);
+        // Dirty exit: something unexpected happened
+        const exitedDirty = Math.abs(data.speed - avgSpeed) > 15;
 
-            if (!carDatabase[carKey] || difference > 500) {
-                const detectedRedline = Math.round(detectedLimiter * 0.93);
-                carDatabase[carKey] = {
-                    limiter:   detectedLimiter,
-                    redline:   detectedRedline,
-                    maxRpm:    data.maxRpm,
-                    timestamp: Date.now(),
-                };
+        if (exitedCleanly && _peakRpm > data.maxRpm * 0.88) {
+            // Valid observation — refine the limiter estimate
+            const detectedLimiter = Math.round(_peakRpm);
+            const existingLimiter = entry.limiter;
+            const difference      = Math.abs(detectedLimiter - existingLimiter);
+
+            // Only record if it's close to what we expect (filters outliers)
+            if (entry.confidence === 0 || difference < 400) {
+                // Weighted blend: new observations carry less weight as confidence grows
+                const blended = entry.confidence === 0
+                    ? detectedLimiter
+                    : Math.round(
+                        (existingLimiter * entry.confidence + detectedLimiter) /
+                        (entry.confidence + 1)
+                    );
+
+                entry.limiter    = blended;
+                entry.redline    = Math.round(blended * DEFAULT_REDLINE_RATIO);
+                entry.confidence = Math.min(entry.confidence + 1, CONFIDENCE_TRUSTED);
+                entry.timestamp  = Date.now();
                 _saveDatabase();
 
-                window.showNotification?.(
-                    `✅ LEARNED! Car ${currentCarOrdinal}: Limiter ${detectedLimiter} RPM, Redline ${detectedRedline} RPM`
+                console.log(
+                    `📈 Limiter refined: ${blended} RPM → ` +
+                    `redline ${entry.redline} RPM ` +
+                    `(confidence ${entry.confidence}/${CONFIDENCE_TRUSTED})`
                 );
-                window.dispatchEvent(new CustomEvent('car:learned', {
-                    detail: {
-                        carOrdinal: currentCarOrdinal,
-                        carKey,
-                        limiter: detectedLimiter,
-                        redline: detectedRedline,
-                    }
-                }));
-            } else {
-                console.log(`ℹ️ Limiter ${detectedLimiter} matches known value (${existingLimiter})`);
+
+                // Notify only when fully trusted
+                if (entry.confidence >= CONFIDENCE_TRUSTED) {
+                    window.showNotification?.(
+                        `✅ Redline locked in: ${entry.redline} RPM`
+                    );
+                    window.dispatchEvent(new CustomEvent('car:learned', {
+                        detail: {
+                            carOrdinal: currentCarOrdinal,
+                            carKey:     _currentCarKey,
+                            limiter:    blended,
+                            redline:    entry.redline,
+                            confidence: entry.confidence,
+                        }
+                    }));
+                }
             }
 
-            _hasLearnedThisSession.add(carKey);
             _isLearning = false;
             _peakRpm    = 0;
-            _flipCount  = 0;
+
+        } else if (exitedDirty || (!inLimiterZone && !exitedCleanly)) {
+            // Inconclusive — discard without penalising confidence
+            _isLearning = false;
+            _peakRpm    = 0;
         }
     }
 
@@ -187,10 +243,14 @@ export function processLearning(data) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 export function initCarLearning() {
-    console.log('[CarLearning] Initialized, database has', Object.keys(carDatabase).length, 'cars');
+    console.log(
+        '[CarLearning] Initialized, database has',
+        Object.keys(carDatabase).length,
+        'entries'
+    );
 }
 
-// ── Expose on window for non-module script blocks (tutorial, hotkeys) ─────────
-window.forceRelearn       = forceRelearn;
-window.getCarDatabase     = () => carDatabase;
+// ── Expose on window for non-module script blocks ─────────────────────────────
+window.forceRelearn         = forceRelearn;
+window.getCarDatabase       = () => carDatabase;
 window.getCurrentCarOrdinal = () => currentCarOrdinal;

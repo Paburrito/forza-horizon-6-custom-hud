@@ -514,6 +514,9 @@
             <button class="settings-btn" onclick="replayTutorial?.()">
                 🎓 Replay Tutorial
             </button>
+            <button class="settings-btn" id="update-btn" onclick="checkForUpdates(true)">
+                🔍 Check for Updates: <span id="update-status">—</span>
+            </button>
         </div>
 
         <!-- Hotkeys -->
@@ -553,7 +556,8 @@
                 Like the previous HUD, I hope you enjoy this one as much as it was fun for me to develop it.<br><br> 
 
                 If you want to use it while streaming on OBS, make sure to use these settings: Window Capture → Capture Method: Windows 10 (1903+)<br><br>
-                <strong>FH6's Custom hud By Paburrito</strong> with love.
+                <strong>FH6 Custom HUD By Paburrito</strong> with love.<br><br>
+                <span id="app-version" style="opacity:0.4; font-size:0.85em;">v—</span>
             </p>
         </div>
     </div>
@@ -763,38 +767,38 @@
             }));
         });
 
-        setInterval(() => {
-            console.log('[Leak] demo active:', window.demoActive,
-                        'advMode:', window.advDemoMode);
-        }, 5000);
+        // setInterval(() => {
+        //     console.log('[Leak] demo active:', window.demoActive,
+        //                 'advMode:', window.advDemoMode);
+        // }, 5000);
 
         setInterval(() => {
             performance.clearResourceTimings();
             performance.clearMarks();
             performance.clearMeasures();
-            console.log(`[GC] Activated cleaning process`)
+            // console.log(`[GC] Activated cleaning process`)
         }, 30000);
         
         // ── FPS + memory monitor — remove before release ──────────────────────────
-        var _fpsCount = 0, _fpsLast = performance.now();
-        window.addEventListener('hud:frame', function() {
-            _fpsCount++;
-            var now = performance.now();
-            if (now - _fpsLast >= 1000) {
-                var mem = performance.memory
-                    ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + 'MB'
-                    : 'n/a';
+        // var _fpsCount = 0, _fpsLast = performance.now();
+        // window.addEventListener('hud:frame', function() {
+        //     _fpsCount++;
+        //     var now = performance.now();
+        //     if (now - _fpsLast >= 1000) {
+        //         var mem = performance.memory
+        //             ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + 'MB'
+        //             : 'n/a';
 
-                if(_fpsCount >= 60)
-                    console.log('[Perf] FPS:' + _fpsCount + '  heap:' + mem);
-                else
-                    console.log('[Perf] WARNING, dropping below 60 FPS:' + _fpsCount + ' FPS,  heap:' + mem);
+        //         if(_fpsCount >= 60)
+        //             console.log('[Perf] FPS:' + _fpsCount + '  heap:' + mem);
+        //         else
+        //             console.log('[Perf] WARNING, dropping below 60 FPS:' + _fpsCount + ' FPS,  heap:' + mem);
 
-                _fpsCount = 0;
-                _fpsLast  = now;
+        //         _fpsCount = 0;
+        //         _fpsLast  = now;
 
-            }
-        });
+        //     }
+        // });
     </script>
 
     <!-- ── Tauri window management ───────────────────────────────────────── -->
@@ -959,6 +963,46 @@
         window.saveWindowState = saveWindowState;
         window.loadWindowState = loadWindowState;
         window.resetToSafePosition = resetToSafePosition;
+
+        // ── Update checker ────────────────────────────────────────────────────────
+        async function checkForUpdates(manual = false) {
+            const statusEl  = document.getElementById('update-status');
+            const versionEl = document.getElementById('app-version');
+
+            try {
+                const currentVersion = await window.__TAURI__.app.getVersion();
+                if (versionEl) versionEl.textContent = `v${currentVersion}`;
+
+                if (statusEl) statusEl.textContent = '…';
+
+                const res    = await fetch(
+                    'https://api.github.com/repos/Paburrito/forza-horizon-6-custom-hud/releases/latest',
+                    { headers: { 'Accept': 'application/vnd.github.v3+json' } }
+                );
+                const data   = await res.json();
+                const latest = data.tag_name?.replace('v', '') ?? null;
+
+                if (!latest) throw new Error('No release found');
+
+                if (latest !== currentVersion) {
+                    if (statusEl) statusEl.textContent = `v${latest} available!`;
+                    window.showNotification?.(
+                        `🆕 Update available: v${latest} — grab it on GitHub`,
+                        8000
+                    );
+                } else {
+                    if (statusEl) statusEl.textContent = 'Up to date ✓';
+                    if (manual) window.showNotification?.('✅ You\'re on the latest version!', 3000);
+                }
+            } catch (e) {
+                if (statusEl) statusEl.textContent = 'Check failed';
+                if (manual) window.showNotification?.('⚠️ Could not check for updates', 3000);
+            }
+        }
+
+        // Check once on startup — 6 second delay to let everything initialize first
+        setTimeout(() => checkForUpdates(false), 6000);
+        window.checkForUpdates = checkForUpdates;
     </script>
 
 </body>
