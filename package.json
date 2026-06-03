@@ -1,7 +1,7 @@
 {
   "name": "Forza-Horizon-6-Custom-HUD-By-Paburrito",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "scripts": {
     "dev": "http-server src -p 1420 -c-1",

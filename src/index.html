@@ -543,6 +543,17 @@
             </p>
         </div>
 
+        <!-- What's Next -->
+        <div class="settings-section">
+            <h3>What's Next</h3>
+            <p class="about-text">
+                A few things still in the pipeline:<br><br>
+                <strong>EV HUD</strong>: a dedicated display for electric cars it's own design and characteristics, I do have to decide on the design and what data to show though.<br><br>
+                <!-- <strong>Advanced HUD guide</strong> — a brief first-run explainer for the superellipse arc, inner gauges and lockup dots.<br><br> -->
+                <strong>Motion blur</strong>: BIIIIIG if, depends on what feedback I get, most likely be paired with the physics of the hud but has yet to be defined.
+            </p>
+        </div>
+
         <!-- About -->
         <div class="settings-section">
             <h3>About</h3>
@@ -735,7 +746,6 @@
         window.replayTutorial = () => {
             closeSettings();
             localStorage.removeItem('forza_hud_tutorial_done');
-            localStorage.removeItem('forza_hud_tutorial_phase');
             window.dispatchEvent(new CustomEvent('tutorial:replay'));
         };
 
@@ -820,6 +830,11 @@
         // Lock
         const lockBtn = document.getElementById('lock-btn');
         lockBtn.addEventListener('click', async () => {
+            // Intercept during tutorial — prevent locking, let tutorial handle it
+            if (window.tutorialActive && !window.isLocked) {
+                window.dispatchEvent(new CustomEvent('tutorial:locked'));
+                return;
+            }
             window.isLocked = !window.isLocked;
             lockBtn.textContent = window.isLocked ? '🔒' : '🔓';
             lockBtn.classList.toggle('locked', window.isLocked);
@@ -965,17 +980,28 @@
         window.resetToSafePosition = resetToSafePosition;
 
         // ── Update checker ────────────────────────────────────────────────────────
+        async function openReleasesPage() {
+            try {
+                await window.__TAURI__.opener.openUrl(
+                    'https://github.com/Paburrito/forza-horizon-6-custom-hud/releases/latest'
+                );
+            } catch (e) {
+                console.error('Failed to open browser:', e);
+            }
+        }
+
         async function checkForUpdates(manual = false) {
             const statusEl  = document.getElementById('update-status');
-            const versionEl = document.getElementById('app-version');
+            const updateBtn = document.getElementById('update-btn');
 
             try {
                 const currentVersion = await window.__TAURI__.app.getVersion();
+                const versionEl = document.getElementById('app-version');
                 if (versionEl) versionEl.textContent = `v${currentVersion}`;
 
                 if (statusEl) statusEl.textContent = '…';
 
-                const res    = await fetch(
+                const res  = await fetch(
                     'https://api.github.com/repos/Paburrito/forza-horizon-6-custom-hud/releases/latest',
                     { headers: { 'Accept': 'application/vnd.github.v3+json' } }
                 );
@@ -986,9 +1012,13 @@
 
                 if (latest !== currentVersion) {
                     if (statusEl) statusEl.textContent = `v${latest} available!`;
+                    if (updateBtn) {
+                        updateBtn.innerHTML = `🔗 Download v${latest} on GitHub`;
+                        updateBtn.onclick   = openReleasesPage;
+                    }
                     window.showNotification?.(
-                        `🆕 Update available: v${latest} — grab it on GitHub`,
-                        8000
+                        `🆕 Update available: v${latest}, head over Settings to download`,
+                        10000
                     );
                 } else {
                     if (statusEl) statusEl.textContent = 'Up to date ✓';
@@ -1000,9 +1030,9 @@
             }
         }
 
-        // Check once on startup — 6 second delay to let everything initialize first
         setTimeout(() => checkForUpdates(false), 6000);
-        window.checkForUpdates = checkForUpdates;
+        window.checkForUpdates  = checkForUpdates;
+        window.openReleasesPage = openReleasesPage;
     </script>
 
 </body>

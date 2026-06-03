@@ -848,25 +848,35 @@
 
     <!-- ========== TUTORIAL ENGINE ========== -->
     <script>
-        var TUT_DONE_KEY  = 'forza_hud_tutorial_done';
-        var TUT_PHASE_KEY = 'forza_hud_tutorial_phase';
+        var _tutLockClicks    = 0;
+        var _currentStepIndex = 0;
+        var _tutorialSteps    = null;
+
+        var TUT_DONE_KEY = 'forza_hud_tutorial_done';
 
         window.tutorialActive = false;
-        var tutPhase2Pending  = false;
 
         var isTutDone   = () => localStorage.getItem(TUT_DONE_KEY) === 'true';
-        var getTutPhase = () => localStorage.getItem(TUT_PHASE_KEY) || null;
-        var setTutPhase = (p) => p === null ? localStorage.removeItem(TUT_PHASE_KEY) : localStorage.setItem(TUT_PHASE_KEY, p);
-        var markTutDone = () => { localStorage.setItem(TUT_DONE_KEY, 'true'); setTutPhase(null); };
+        var markTutDone = () => localStorage.setItem(TUT_DONE_KEY, 'true');
 
         var hideHud = () => document.getElementById('tachContainer').classList.add('tut-hidden');
         var showHud = () => document.getElementById('tachContainer').classList.remove('tut-hidden');
+
+        function tutSkip() {
+            markTutDone();
+            tutWiggleAndClose(() =>
+                window.showNotification?.(
+                    'Tutorial skipped — find it again in Settings → Replay Tutorial', 4000
+                )
+            );
+        }
 
         function showTutPanel(message, buttons) {
             const panel  = document.getElementById('tutorial-panel');
             const btnDiv = document.getElementById('tut-buttons');
             document.getElementById('tut-message').textContent = message;
             btnDiv.innerHTML = '';
+
             for (const b of buttons) {
                 const btn = document.createElement('button');
                 btn.className = 'tut-btn' + (b.primary ? ' primary' : '');
@@ -874,6 +884,17 @@
                 btn.onclick = b.action;
                 btnDiv.appendChild(btn);
             }
+
+            // Always show a skip button unless explicitly suppressed
+            if (buttons.length > 0) {
+                const skip = document.createElement('button');
+                skip.className = 'tut-btn';
+                skip.textContent = 'Skip tutorial';
+                skip.style.cssText = 'opacity:0.45; margin-left:auto;';
+                skip.onclick = tutSkip;
+                btnDiv.appendChild(skip);
+            }
+
             panel.style.display = 'flex';
         }
 
@@ -894,176 +915,175 @@
             setTimeout(() => {
                 panel.classList.remove('tut-wiggle');
                 hideTutPanel();
+                showHud();
                 window.tutorialActive = false;
                 setButtonHighlight(null);
+
+                // Restore lock button if it was disabled during the cheeky phase
+                const lockBtn = document.getElementById('lock-btn');
+                if (lockBtn) {
+                    lockBtn.style.opacity       = '';
+                    lockBtn.style.pointerEvents = '';
+                }
+
                 document.getElementById('titlebar')?.classList.remove('always-visible');
                 if (callback) callback();
             }, 650);
         }
 
-        function buildPhase1(next) {
+        function buildSteps(next) {
             return [
-                // 0 - welcome
+                // 0 — welcome
                 () => {
                     hideHud();
                     showTutPanel(
-                        "Hey! Welcome to the Forza Horizon 6 Custom HUD! First time running, let me walk you through things real quick.",
-                        [{ label: "Let's go!", primary: true, action: () => { showHud(); next(1); } }]
+                        "Hey! Welcome to the Forza Horizon 6 Custom HUD. Since this is the first time running the app, let me walk you through things real quick.",
+                        [{ label: "Next →", primary: true, action: () => { showHud(); next(1); } }]
                     );
                 },
-                // 1 - reassurance
+                // 1 — reassurance
                 () => showTutPanel(
-                    "Don't worry, this setup only happens once. After this you'll go straight into the HUD every time.",
-                    [{ label: "Good to know", primary: true, action: () => next(2) }]
+                    "Don't worry, this only happens once. After this you'll go straight into the HUD every time.",
+                    [{ label: "Next →", primary: true, action: () => next(2) }]
                 ),
-                // 2 - apply preset
+                // 2 — apply preset
                 async () => {
                     if (window.applyResolutionPreset) await window.applyResolutionPreset();
                     showTutPanel(
-                        "I went ahead and sized the app for your screen. You can always drag and resize it wherever feels right.",
-                        [{ label: "Nice!", primary: true, action: () => next(3) }]
+                        "I went ahead and sized the app for your screen. That said though, you can drag and resize it to whatever feels right for you.",
+                        [{ label: "Next →", primary: true, action: () => next(3) }]
                     );
                 },
-                // 3 - intro to controls
+                // 3 — intro to controls
                 () => showTutPanel(
                     "There are a few buttons on the titlebar at the top. Let me walk you through each one.",
-                    [{ label: "Show me", primary: true, action: () => next(4) }]
+                    [{ label: "Next →", primary: true, action: () => next(4) }]
                 ),
-                // 4 - settings gear
+                // 4 — settings
                 () => {
                     setButtonHighlight('settings-btn');
                     showTutPanel(
-                        "⚙ The Settings button is your control panel — speed units, HUD motion physics, notifications, hotkeys, and the connection info for setting up Forza are all in there.",
-                        [{ label: "Got it", primary: true, action: () => next(5) }]
+                        "⚙ The Settings button is your control panel, speed units, HUD motion, notifications, hotkeys, and the Forza connection info are all in there.",
+                        [{ label: "Next →", primary: true, action: () => next(5) }]
                     );
                 },
-                // 5 - HUD toggle
+                // 5 — HUD toggle
                 () => {
                     setButtonHighlight('hud-toggle-btn');
                     showTutPanel(
-                        "This button lets you switch between the Simple and Advanced HUD views. You're in Simple right now — Advanced is still cooking.",
-                        [{ label: "Makes sense", primary: true, action: () => next(6) }]
+                        "This switches between Simple and Advanced HUD views. Simple gives you a classic circular tachometer similar to what Forza has with a few extra goodies. Advanced is a lot more race inspired, RPM arc with inner HP, Torque and Boost gauges. Try both and see which you prefer.",
+                        [{ label: "Next →", primary: true, action: () => next(6) }]
                     );
                 },
-                // 6 - lock button pt 1
+                // 6 — lock pt 1
                 () => {
                     setButtonHighlight('lock-btn');
                     showTutPanel(
-                        "🔓 Once you're happy with the position, hit Lock. The border disappears and the window becomes click-through so you can play as if the HUD isn't there.",
-                        [{ label: "Ok", primary: true, action: () => next(7) }]
+                        "🔓 Once you're happy with the position and hud selection, you can hit the lock button. The border disappears and the window becomes click-through so you can play without the HUD getting in the way. Don't click it just yet though!",
+                        [{ label: "Next →", primary: true, action: () => next(7) }]
                     );
                 },
-                // 7 - lock button pt 2
+                // 7 — lock pt 2
                 () => showTutPanel(
-                    "Fair warning: once locked you can't interact with the HUD directly. To unlock, click the app in your taskbar and press Ctrl+L.",
-                    [{ label: "Understood", primary: true, action: () => { setButtonHighlight(null); next(8); } }]
+                    "Once locked you can't interact with the HUD directly. To unlock, click the app in your taskbar and press Ctrl+L.",
+                    [{ label: "Next →", primary: true, action: () => { setButtonHighlight(null); next(8); } }]
                 ),
-                // 8 - open the game
+                // 8 — open the game
                 () => showTutPanel(
-                    "Before we can use the HUD, we need to configure Forza Horizon 6. Go ahead and open the game, then hit Ok when you're ready.",
-                    [{ label: "Ok, game is open", primary: true, action: () => next(9) }]
+                    "Before we can use the HUD, we need to configure a couple things in Forza Horizon 6. Go ahead and open the game, then hit OK when you're ready.",
+                    [{ label: "OK →", primary: true, action: () => next(9) }]
                 ),
-                // 9 - data out
+                // 9 — data out
                 () => showTutPanel(
                     "Head to Settings → HUD and Gameplay, find 'Data Out' and toggle it ON.",
-                    [{ label: "Done", primary: true, action: () => next(10) }]
+                    [{ label: "Next →", primary: true, action: () => next(10) }]
                 ),
-                // 10 - IP and port
+                // 10 — IP and port
                 () => showTutPanel(
-                    "Just below that, set Data Out IP Address to 127.0.0.1 and Data Out IP Port to 5301. This stays local on your PC — it's how the HUD reads Forza's telemetry.",
-                    [{ label: "All set", primary: true, action: () => next(11) }]
+                    "Just below that, set 'Data Out IP Address' to 127.0.0.1 and 'Data Out IP Port' to 5301. This is so the data exported stays local to your pc, that way this app is able to read Forza's telemetry.",
+                    [{ label: "Next →", primary: true, action: () => next(11) }]
                 ),
-                // 11 - speedometer
+                // 11 — speedometer
                 () => showTutPanel(
-                    "Lastly: find the Speedometer setting and turn it off so you're not running two HUDs at once.",
-                    [{ label: "Done", primary: true, action: () => next(12) }]
+                    "Lastly: find the 'Speedometer' setting and turn it off so you're not running two HUDs at once.",
+                    [{ label: "Next →", primary: true, action: () => next(12) }]
                 ),
-                // 12 - fork
+                // 12 — rev limiter (automatic now)
                 () => showTutPanel(
-                    "That's it, you're all set! Want me to pop back in once you're on the road to show you how the rev limiter learning works?",
-                    [
-                        { label: "Sure, show me", primary: true, action: () => {
-                            setTutPhase('drive');
-                            tutWiggleAndClose(() => window.showNotification?.("Great! See you on the road!", 5000));
-                        }},
-                        { label: "I'm good, thanks", action: () => {
-                            markTutDone();
-                            tutWiggleAndClose(() => window.showNotification?.("Great! Have fun racing!", 4000));
-                        }}
-                    ]
+                    "Bit of a nerdy info here, but unfortunately there was no way to know when the redline of each car starts since forza devs never made that info available, so after doing a bit of math and logic, the HUD figures out the redline by itself so you don't have to worry about anything",
+                    [{ label: "Next →", primary: true, action: () => next(13) }]
+                ),
+                // 13 — lockup dots
+                () => showTutPanel(
+                    "The dots on each side of the Advanced HUD view are per-wheel lockup indicators. They light up under hard braking when a wheel begins to lock up, it goes like this: white for mild braking and if you're about to lock your wheel, these lights beging to blink in a reddish pink tone.",
+                    [{ label: "Next →", primary: true, action: () => next(14) }]
+                ),
+                // 14 — lockup dots
+                () => showTutPanel(
+                    "The same logic applies for the Simple HUD view, just this time is all shown by a single icon, the LOCK word begins to light white and when ANY wheel is about to lock up, it rapidly blinks red.",
+                    [{ label: "Next →", primary: true, action: () => next(15) }]
+                ),
+                // 15 — lockup dots
+                () => showTutPanel(
+                    "Both HUDS have the LC icon, obviously this stands for 'Launch Control', this one responds the same way as it was implemented originally in the game: Thottle down, Handbrake on, boom, car's ready to launch, you'll know the LC is active and ready to launch because the LC icon is blinking in red",
+                    [{ label: "Next →", primary: true, action: () => next(16) }]
+                ),
+                // 16 — done
+                () => showTutPanel(
+                    "That's pretty much everything! Have fun racing. You'll find all settings and a tutorial replay option in ⚙ Settings anytime.",
+                    [{ label: "Let's race! 🏁", primary: true, action: () => {
+                        markTutDone();
+                        tutWiggleAndClose(() =>
+                            window.showNotification?.("You're all set! Have fun out there.", 4000)
+                        );
+                    }}]
                 ),
             ];
         }
 
-        function runPhase1() {
+        function runTutorial() {
             window.tutorialActive = true;
+            _tutLockClicks = 0;
             document.getElementById('titlebar')?.classList.add('always-visible');
-            const steps = buildPhase1((i) => steps[i]());
-            steps[0]();
+            _tutorialSteps = buildSteps((i) => {
+                _currentStepIndex = i;
+                _tutorialSteps[i]();
+            });
+            _currentStepIndex = 0;
+            _tutorialSteps[0]();
         }
-
-        function runPhase2() {
-            window.tutorialActive = true;
-            document.getElementById('titlebar')?.classList.add('always-visible');
-            tutPhase2Pending = false;
-            showTutPanel(
-                "Good to see you on the road! Let's teach the HUD your car's rev limiter. It's best with manual transmission — put it in first gear and bounce off the limiter for a couple of seconds, then lift.",
-                [{ label: "OK", primary: true, action: () => {
-                    showTutPanel("Go ahead — I'm listening...", []);
-                    window.tutWaitingForLimiter = true;
-                }}]
-            );
-        }
-
-        function onLimiterLearned() {
-            if (!window.tutWaitingForLimiter) return;
-            window.tutWaitingForLimiter = false;
-            showTutPanel(
-                "Got it! The HUD now knows exactly where the redline sits. It remembers every car you drive — one bounce per car is all it needs. If you retune, Ctrl+R resets it.",
-                [{ label: "Nice!", primary: true, action: () => showTutPanel(
-                    "The HP, Torque and Boost gauges adapt to each car automatically. Keep an eye on Torque especially — when it starts dropping toward the third white segment (~75% peak), it's time to shift up and stay in the powerband.",
-                    [{ label: "Got it, thanks!", primary: true, action: () => {
-                        markTutDone();
-                        tutWiggleAndClose(() => window.showNotification?.("That's all! Have fun racing!", 4000));
-                    }}]
-                )}]
-            );
-        }
-
-        function runPhase2Reentry() {
-            window.tutorialActive = true;
-            document.getElementById('titlebar')?.classList.add('always-visible');
-            showTutPanel(
-                "Hey! The app closed before we got to the fun part. Want me to walk you through the rev limiter learning?",
-                [
-                    { label: "Show me", primary: true, action: runPhase2 },
-                    { label: "I'm good", action: () => { markTutDone(); tutWiggleAndClose(); } }
-                ]
-            );
-        }
-
-        window.tutCheckPhase2 = (data) => {
-            if (isTutDone() || getTutPhase() !== 'drive') return;
-            if (window.tutorialActive || tutPhase2Pending) return;
-            if (data.isRaceOn !== 1) return;
-            tutPhase2Pending = true;
-            setTimeout(runPhase2, 2000);
-        };
-
-        window.tutOnLimiterLearned = onLimiterLearned;
 
         function initTutorial() {
             if (isTutDone()) return;
-            const phase = getTutPhase();
-            if (!phase)              runPhase1();
-            else if (phase === 'drive') runPhase2Reentry();
+            runTutorial();
         }
 
-        // Listen for replay request from root launcher's settings panel
         window.addEventListener('tutorial:replay', () => {
             localStorage.removeItem(TUT_DONE_KEY);
-            localStorage.removeItem(TUT_PHASE_KEY);
-            runPhase1();
+            runTutorial();
+        });
+
+        window.addEventListener('tutorial:locked', () => {
+            _tutLockClicks++;
+
+            if (_tutLockClicks === 1) {
+                showTutPanel(
+                    "You clicked the lock button, didn't you? Here, I've gone ahead and unlocked the app so we can finish up properly.",
+                    [{ label: "Lol ok", primary: true,
+                    action: () => _tutorialSteps[_currentStepIndex]() }]
+                );
+            } else {
+                const lockBtn = document.getElementById('lock-btn');
+                if (lockBtn) {
+                    lockBtn.style.opacity      = '0.2';
+                    lockBtn.style.pointerEvents = 'none';
+                }
+                showTutPanel(
+                    "Cheeky. I see what you did there. Lock button's going on timeout until we're done.",
+                    [{ label: "Ok... :(", primary: true,
+                    action: () => _tutorialSteps[_currentStepIndex]() }]
+                );
+            }
         });
 
         initTutorial();
