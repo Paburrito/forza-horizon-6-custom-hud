@@ -38,7 +38,17 @@ function _connect() {
         window.dispatchEvent(new CustomEvent('ws:connected'));
     };
 
+    let _wsCount = 0, _wsLast = performance.now();
+
     _ws.onmessage = (event) => {
+        _wsCount++;
+        const now = performance.now();
+        if (now - _wsLast >= 1000) {
+            console.log('[WS] messages/sec:', _wsCount);
+            _wsCount = 0;
+            _wsLast = now;
+        }
+        
         let data;
         try {
             data = JSON.parse(event.data);

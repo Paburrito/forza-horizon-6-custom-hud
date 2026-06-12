@@ -432,7 +432,13 @@
     </div>
 
     <!-- ── HUD mount point ───────────────────────────────────────────────── -->
-    <div id="hud-root"></div>
+    <div id="hud-root" data-physics="true">
+        <iframe id="hud-iframe"
+                src=""
+                style="position:absolute;inset:0;width:100%;height:100%;border:none;background:transparent;"
+                allowtransparency="true">
+        </iframe>
+    </div>
 
     <!-- ── Notification bubble ───────────────────────────────────────────── -->
     <div id="notification-bubble">
@@ -519,6 +525,23 @@
             </button>
         </div>
 
+        <!-- Diagnostics -->
+        <div class="settings-section">
+            <h3>Diagnostics</h3>
+            <p class="connection-info" style="margin-bottom:10px">
+                Records performance data while you drive.<br>
+                Start recording, reproduce the issue, then export.
+            </p>
+            <button class="settings-btn" id="diag-record-btn" onclick="toggleDiagnostics()">
+                ⏺ Start Recording
+            </button>
+            <button class="settings-btn" id="diag-export-btn"
+                    onclick="window._diag.export()"
+                    style="display:none">
+                📄 Export Diagnostic Log
+            </button>
+        </div>
+
         <!-- Hotkeys -->
         <div class="settings-section">
             <h3>Hotkeys</h3>
@@ -575,112 +598,51 @@
 
     <!-- ── Shared modules ─────────────────────────────────────────────────── -->
     <script type="module">
-        import { initWebSocket }                    from './shared/ws.js';
-        import { initPhysics, updatePhysicsTargets,
-                 togglePhysics }                   from './shared/physics.js';
-        import { initCarLearning, processLearning,
-                 markSweepFired, forceRelearn,
-                 currentCarOrdinal }               from './shared/car-learning.js';
-        import { initUtils, showNotification,
-                 toggleNotifications, convertSpeed,
-                 setSpeedDisplay, toggleSpeedUnit,
-                 isMetric }                        from './shared/utils.js';
-        import { computeLockupDelta }               from './shared/lockup.js';
-        import { processLC } from './shared/launch-control.js';
+        import { initCoordinator }                                                                                              from './shared/coordinator.js';
+        import { initWebSocket }                                                                                                from './shared/ws.js';
+        import { initPhysics, updatePhysicsTargets,togglePhysics }                                                              from './shared/physics.js';
+        import { initUtils, showNotification, toggleNotifications, convertSpeed, setSpeedDisplay, toggleSpeedUnit, isMetric }   from './shared/utils.js';
 
         // ── HUD switcher ──────────────────────────────────────────────────
-        const HUDS = { simple: './simple/index.html', advanced: './advanced/index.html' };
-        let activeHud = localStorage.getItem('forza_hud_active') || 'simple';
-        const hudRoot = document.getElementById('hud-root');
+        const HUDS      = { simple: './simple/index.html', advanced: './advanced/index.html' };
+        let   activeHud = localStorage.getItem('forza_hud_active') || 'simple';
+        const hudIframe  = document.getElementById('hud-iframe');
 
-        const _hudContainers = {};
+        // Post a message to the active HUD iframe
+        function postToHud(type, detail = {}) {
+            hudIframe.contentWindow?.postMessage({ type, ...detail }, '*');
+        }
 
         async function loadHud(name) {
-            // If already loaded, just show/hide — no re-injection
-            if (_hudContainers[name]) {
-                
-                // Stop demo on current HUD before switching (no state flip)
-                if (window.demoActive) {
-                    window.dispatchEvent(new CustomEvent('demo:stop'));
-                }
-                
-                await window.saveWindowState() // save current HUD's position before switching
-
-                Object.values(_hudContainers).forEach(c => c.style.display = 'none');
-                _hudContainers[name].style.display = '';
-                activeHud = name;
-                window._activeHud = name;
-                localStorage.setItem('forza_hud_active', name);
-                updateHudToggleBtn();
-                initPhysics();
-                setTimeout(() => window.setAdvScale?.(), 30);
-                await window.loadWindowState(); // restore new HUD's saved position
-
-                console.log(`[Launcher] Switched to HUD: ${name}`);
-
-                // Re-start demo on new HUD if it was running
-                if (window.demoActive) {
-                    setTimeout(() => window.dispatchEvent(new CustomEvent('demo:start')), 150);
-                }
-                return;
-            }
-
-            const res  = await fetch(HUDS[name]);
-            const html = await res.text();
-            const parser = new DOMParser();
-            const doc    = parser.parseFromString(html, 'text/html');
-
-            const hudBase = new URL(HUDS[name], window.location.href);
-            doc.querySelectorAll('[src]:not(script)').forEach(el => {
-                const src = el.getAttribute('src');
-                if (src && !src.startsWith('tauri://') && !src.startsWith('http') && !src.startsWith('data:')) {
-                    el.setAttribute('src', new URL(src, hudBase).href);
-                }
-            });
-
-            doc.querySelectorAll('style').forEach(s => {
-                const el = document.createElement('style');
-                el.textContent = s.textContent;
-                document.head.appendChild(el);
-            });
-
-            // Each HUD gets its own container div — never destroyed
-            const container = document.createElement('div');
-            container.dataset.hud = name;
-            container.style.display = 'none';
-
-            doc.body.childNodes.forEach(node => {
-                if (node.nodeName === 'SCRIPT') {
-                    const s = document.createElement('script');
-                    if (node.type) s.type = node.type;
-                    if (node.src)  s.src  = node.src;
-                    else s.textContent = node.textContent;
-                    container.appendChild(s);
-                } else {
-                    container.appendChild(document.importNode(node, true));
-                }
-            });
-
-            hudRoot.appendChild(container);
-            _hudContainers[name] = container;
-
-            // Hide all others, show the new one
-            Object.entries(_hudContainers).forEach(([n, c]) => {
-                c.style.display = n === name ? '' : 'none';
-            });
-
-            activeHud = name;
+            if (window.demoActive) window.dispatchEvent(new CustomEvent('demo:stop'));
+            await window.saveWindowState?.();
+ 
+            activeHud        = name;
             window._activeHud = name;
             localStorage.setItem('forza_hud_active', name);
             updateHudToggleBtn();
-            initPhysics();
-            setTimeout(() => window.setAdvScale?.(), 30);
-            await window.loadWindowState?.(); 
-            console.log(`[Launcher] Loaded HUD: ${name}`);
-            // Re-start demo on new HUD if it was running
-            if (window.demoActive) {
-                setTimeout(() => window.dispatchEvent(new CustomEvent('demo:start')), 150);
-            }
+ 
+            // Setting src destroys the old HUD context and loads the new one —
+            // the previous iframe's JS, canvases and event listeners are gone
+            hudIframe.src = HUDS[name];
+ 
+            hudIframe.onload = async () => {
+                initPhysics();
+ 
+                // Send initial state the HUD needs on first render
+                postToHud('hud:init', {
+                    isMetric: window.isMetric?.() ?? true,
+                });
+ 
+                setTimeout(() => postToHud('hud:scale'), 30);
+                await window.loadWindowState?.();
+ 
+                if (window.demoActive) {
+                    setTimeout(() => postToHud('demo:start'), 150);
+                }
+ 
+                console.log(`[Launcher] Loaded HUD: ${name}`);
+            };
         }
 
         function updateHudToggleBtn() {
@@ -692,8 +654,7 @@
         }
 
         document.getElementById('hud-toggle-btn').addEventListener('click', () => {
-            const next = activeHud === 'simple' ? 'advanced' : 'simple';
-            loadHud(next);
+            loadHud(activeHud === 'simple' ? 'advanced' : 'simple');
         });
 
         // ── Settings panel ────────────────────────────────────────────────
@@ -742,7 +703,11 @@
         notifToggle.addEventListener('change', () => toggleNotifications());
 
         // Expose for settings-btn onclick handlers
-        window.forceRelearn   = forceRelearn;
+        window.forceRelearn = async () => {
+            await window.__TAURI__.core.invoke('force_relearn');
+            window.showNotification?.('Re-learning mode activated! 🔄 Drive to the limiter.', 4000);
+        };
+
         window.replayTutorial = () => {
             closeSettings();
             localStorage.removeItem('forza_hud_tutorial_done');
@@ -750,65 +715,72 @@
         };
 
         // ── Boot ──────────────────────────────────────────────────────────
-        initUtils();
-        initCarLearning();
         await loadHud(activeHud);
+        initUtils();
+    
         initWebSocket();
+        initCoordinator();
+
+        // Coordinator and other systems dispatch on window; we forward to iframe.
+        const _HUD_FORWARD_EVENTS = [
+            'hud:frame',
+            'car:changed', 'car:learned',
+            'speedunit:changed',
+            'lc:state',
+            'demo:start', 'demo:stop', 'demo:toggle',
+            'tutorial:replay', 'tutorial:locked',
+        ];
+ 
+        _HUD_FORWARD_EVENTS.forEach(type => {
+            window.addEventListener(type, (e) => {
+                const detail = type === 'hud:frame'
+                    ? { ...e.detail ?? {}, isMetric: isMetric() }
+                    : e.detail ?? {};
+                postToHud(type, detail);
+            });
+        });
+
+        // ── Message listener — receive requests from active HUD iframe ────────
+        window.addEventListener('message', (e) => {
+            if (e.source !== hudIframe.contentWindow) return;
+            const { type, ...payload } = e.data ?? {};
+ 
+            switch (type) {
+                case 'notification':
+                    window.showNotification?.(payload.message, payload.duration);
+                    break;
+                case 'relearn':
+                    window.forceRelearn?.();
+                    break;
+                case 'titlebar:visible':
+                    document.getElementById('titlebar')?.classList.toggle('always-visible', payload.visible);
+                    break;
+            }
+        });
 
         // const AUTO_DEMO = true; // ← flip to false before a release build
         // if (AUTO_DEMO) setTimeout(() => window.dispatchEvent(new CustomEvent('demo:toggle')), 1500);
 
-        // ── Telemetry → shared processors → HUD event ────────────────────
-        window.addEventListener('telemetry', (e) => {
-            const data = e.detail;
-
-            // Car learning returns redlineRpm for use by the active HUD
-            const { redlineRpm } = processLearning(data);
-
-            // Physics targets (HUD motion)
-            updatePhysicsTargets(data);
-
-            //
-            processLC(data);
-
-            // Re-dispatch an enriched event that the active HUD renders from
-            window.dispatchEvent(new CustomEvent('hud:frame', {
-                detail: { data, redlineRpm }
-            }));
-        });
-
-        // setInterval(() => {
-        //     console.log('[Leak] demo active:', window.demoActive,
-        //                 'advMode:', window.advDemoMode);
-        // }, 5000);
-
-        setInterval(() => {
-            performance.clearResourceTimings();
-            performance.clearMarks();
-            performance.clearMeasures();
-            // console.log(`[GC] Activated cleaning process`)
-        }, 30000);
-        
         // ── FPS + memory monitor — remove before release ──────────────────────────
-        // var _fpsCount = 0, _fpsLast = performance.now();
-        // window.addEventListener('hud:frame', function() {
-        //     _fpsCount++;
-        //     var now = performance.now();
-        //     if (now - _fpsLast >= 1000) {
-        //         var mem = performance.memory
-        //             ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + 'MB'
-        //             : 'n/a';
+        var _fpsCount = 0, _fpsLast = performance.now();
+        window.addEventListener('hud:frame', function() {
+            _fpsCount++;
+            var now = performance.now();
+            if (now - _fpsLast >= 1000) {
+                var mem = performance.memory
+                    ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + 'MB'
+                    : 'n/a';
 
-        //         if(_fpsCount >= 60)
-        //             console.log('[Perf] FPS:' + _fpsCount + '  heap:' + mem);
-        //         else
-        //             console.log('[Perf] WARNING, dropping below 60 FPS:' + _fpsCount + ' FPS,  heap:' + mem);
+                if(_fpsCount >= 55)
+                    console.log('[Perf] FPS:' + _fpsCount + '  heap:' + mem);
+                else
+                    console.log('[Perf] WARNING, dropping below 60 FPS:' + _fpsCount + ' FPS,  heap:' + mem);
 
-        //         _fpsCount = 0;
-        //         _fpsLast  = now;
+                _fpsCount = 0;
+                _fpsLast  = now;
 
-        //     }
-        // });
+            }
+        });
     </script>
 
     <!-- ── Tauri window management ───────────────────────────────────────── -->
@@ -1033,6 +1005,148 @@
         setTimeout(() => checkForUpdates(false), 6000);
         window.checkForUpdates  = checkForUpdates;
         window.openReleasesPage = openReleasesPage;
+
+        // ── Diagnostic logger ─────────────────────────────────────────────────────────
+        window._diag = {
+            enabled:    false,
+            log:        [],
+            MAX:        3600,   // 60s at 60fps
+            startTime:  null,
+            _wsCount:   0,
+            _fpsCount:  0,
+            _fpsLast:   performance.now(),
+
+            record(category, key, value) {
+                if (!this.enabled) return;
+                this.log.push({
+                    t:   (performance.now() - this.startTime).toFixed(1),
+                    cat: category,
+                    key,
+                    val: typeof value === 'number' ? value.toFixed(2) : value
+                });
+                if (this.log.length > this.MAX) this.log.shift();
+            },
+
+            countWsMessage() {
+                if (!this.enabled) return;
+                this._wsCount++;
+            },
+
+            countFrame() {
+                if (!this.enabled) return;
+                this._fpsCount++;
+                const now = performance.now();
+                if (now - this._fpsLast >= 1000) {
+                    this.record('perf', 'fps',    this._fpsCount);
+                    this.record('perf', 'wsRate', this._wsCount);
+                    if (performance.memory) {
+                        this.record('perf', 'heapMB',
+                            performance.memory.usedJSHeapSize / 1048576);
+                    }
+                    this._fpsCount = 0;
+                    this._wsCount  = 0;
+                    this._fpsLast  = now;
+                }
+            },
+
+            start() {
+                this.enabled   = true;
+                this.startTime = performance.now();
+                this.log       = [];
+                this._fpsCount = 0;
+                this._wsCount  = 0;
+                this._fpsLast  = performance.now();
+                window.showNotification?.('🔴 Diagnostics recording — export when ready', 4000);
+                document.getElementById('diag-record-btn').textContent = '⏹ Stop Recording';
+                document.getElementById('diag-record-btn').style.background = 'rgba(255,0,136,0.3)';
+                document.getElementById('diag-export-btn').style.display = '';
+            },
+
+            stop() {
+                this.enabled = false;
+                document.getElementById('diag-record-btn').textContent = '⏺ Start Recording';
+                document.getElementById('diag-record-btn').style.background = '';
+                window.showNotification?.('⏹ Recording stopped — export when ready', 3000);
+            },
+
+            async export() {
+                if (this.log.length === 0) {
+                    window.showNotification?.('No data to export — record first', 3000);
+                    return;
+                }
+
+                const duration = ((performance.now() - this.startTime) / 1000).toFixed(1);
+
+                const byKey = (key) => this.log
+                    .filter(e => e.key === key)
+                    .map(e => parseFloat(e.val))
+                    .filter(v => !isNaN(v));
+
+                const avg  = arr => arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(2) : 'n/a';
+                const min  = arr => arr.length ? Math.min(...arr).toFixed(2) : 'n/a';
+                const max  = arr => arr.length ? Math.max(...arr).toFixed(2) : 'n/a';
+
+                const fps      = byKey('fps');
+                const heap     = byKey('heapMB');
+                const wsRate   = byKey('wsRate');
+                const renderMs = byKey('renderMs');
+                const physMs   = byKey('physicsMs');
+
+                const lines = [
+                    '═══════════════════════════════════════════════════════════════',
+                    '  Forza Horizon 6 Custom HUD — Diagnostic Report',
+                    `  Generated : ${new Date().toISOString()}`,
+                    `  Duration  : ${duration}s`,
+                    `  HUD       : ${window._activeHud ?? 'unknown'}`,
+                    `  Entries   : ${this.log.length}`,
+                    '═══════════════════════════════════════════════════════════════',
+                    '',
+                    '── PERFORMANCE SUMMARY ────────────────────────────────────────',
+                    `  FPS             avg: ${avg(fps).padEnd(8)} min: ${min(fps).padEnd(8)} max: ${max(fps)}`,
+                    `  WS packets/s    avg: ${avg(wsRate).padEnd(8)} min: ${min(wsRate).padEnd(8)} max: ${max(wsRate)}`,
+                    `  Heap MB         avg: ${avg(heap).padEnd(8)} min: ${min(heap).padEnd(8)} max: ${max(heap)}`,
+                    renderMs.length
+                        ? `  Render ms       avg: ${avg(renderMs).padEnd(8)} max: ${max(renderMs)}`
+                        : '  Render ms       n/a (simple HUD instrumentation)',
+                    physMs.length
+                        ? `  Physics ms      avg: ${avg(physMs).padEnd(8)} max: ${max(physMs)}`
+                        : '  Physics ms      n/a',
+                    '',
+                    '── DROPPED FRAMES (render > 16.6ms) ───────────────────────────',
+                    ...this.log
+                        .filter(e => e.key === 'renderMs' && parseFloat(e.val) > 16.6)
+                        .map(e => `  [${String(e.t).padStart(9)}ms] ${e.val}ms`)
+                        .slice(0, 50)
+                        || ['  none detected'],
+                    '',
+                    '── RAW LOG ────────────────────────────────────────────────────',
+                    ...this.log.map(e =>
+                        `  [${String(e.t).padStart(9)}ms] ${e.cat.padEnd(8)} ${e.key.padEnd(12)} ${e.val}`
+                    )
+                ];
+
+                const content = lines.join('\n');
+                try {
+                    const path = await window.__TAURI__.dialog.save({
+                        defaultPath: `hud-diag-${Date.now()}.txt`,
+                        filters: [{ name: 'Text File', extensions: ['txt'] }]
+                    });
+
+                    if (path) {
+                        await window.__TAURI__.fs.writeTextFile(path, content);
+                        window.showNotification?.('📄 Diagnostic log saved', 3000);
+                    }
+                } catch (e) {
+                    console.error('Export failed:', e);
+                    window.showNotification?.('⚠️ Export failed', 3000);
+                }
+            }
+        };
+
+        function toggleDiagnostics() {
+            window._diag.enabled ? window._diag.stop() : window._diag.start();
+        }
+        window.toggleDiagnostics = toggleDiagnostics;
     </script>
 
 </body>

@@ -1,6 +1,6 @@
 [package]
 name = "Forza-Horizon-6-Custom-HUD-By-Paburrito"
-version = "1.0.3"
+version = "1.0.4"
 description = "A custom HUD views for Forza Horizon 6"
 authors = ["you"]
 edition = "2021"
@@ -26,3 +26,4 @@ tokio-tungstenite = "0.21"
 futures-util = "0.3"
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"

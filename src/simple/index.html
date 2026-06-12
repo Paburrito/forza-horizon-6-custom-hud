@@ -204,7 +204,7 @@
     <!-- ── HUD WRAPPER ────────────────────────────────────────────────────── -->
     <div class="hud-wrapper">
         <div class="hud-scaled-group">
-            <div class="hud-container">
+            <div class="hud-container" id="hudContainer">
                 <div class="tach-container" id="tachContainer">
                     <img src="./Tachometer.png" class="tach-bg"
                          width="621" height="621"
@@ -314,9 +314,6 @@
         var BOOST_NEEDLE_TIP_WIDTH  = 3;
         var HP_TQ_NEEDLE_LENGTH     = 35;
 
-        // ── Effects ────────────────────────────────────────────────────────
-        var SHADOW_BLUR = 10;
-
         // ── Fonts ──────────────────────────────────────────────────────────
         var FONT_RPM_NUMBERS = '45px ForzaFont, Arial';
         var FONT_LABELS      = 'bold 30px ForzaFont, Arial';
@@ -336,15 +333,6 @@
 
         // ── Gauge state ────────────────────────────────────────────────────
         var currentMaxRPM     = DEFAULT_MAX_RPM;
-        var sessionMaxBoost   = DEFAULT_MAX_BOOST;
-        var sessionMaxVacuum  = DEFAULT_MAX_VACUUM;
-        var sessionMaxHP      = DEFAULT_MAX_HP;
-        var sessionMinHP      = DEFAULT_MIN_HP;
-        var sessionMaxTQ      = DEFAULT_MAX_TQ;
-        var sessionMinTQ      = DEFAULT_MIN_TQ;
-        var _gaugeLastRace    = 0;   // tracks race state for gauge resets
-        var _gaugeLastCarOrd  = null;
-        var _gaugeLastMaxRPM  = 0;
 
         // ── Initialize Tachometer Gradients ───────────────────────────────────────────────
         function initTachGradients() {
@@ -360,8 +348,12 @@
             [_gradTQRed,    _gradTQWhite]    = makeGrad(tachCtxS, TQ_RADIUS);
         }
 
-        // Call this once after tachCtxS is ready, before the first frame
-        initTachGradients();
+        document.fonts.load('1em ForzaFont').then(() => {
+            console.log('[HUD] ForzaFont loaded, status:', [...document.fonts].find(f => f.family === 'ForzaFont')?.status);
+            initTachGradients();
+            setSimpleScale();
+            _tachStaticDirty = true;
+        });
 
         var cachedGradients = { normal: null, redline: null };
 
@@ -507,33 +499,16 @@
         }
 
         // ── Draw Tachometer ─────────────────────────────────────────────────
-        function drawTachometer(data, redlineRpm) {
+        function drawTachometer(data, redlineRpm, maxima = {
+            maxBoost: 5, maxVacuum: 2,
+            maxHP: 10,   minHP: 5,
+            maxTQ: 10,   minTQ: 5,
+            reset: false
+        }) {
 
             // ── Session learning + dirty flag ─────────────────────────────────────────
-            let resetGauges = false;
-            if (data.isRaceOn === 1 && _gaugeLastRace === 0)                                             resetGauges = true;
-            if (data.carOrdinal !== undefined && data.carOrdinal !== _gaugeLastCarOrd
-                && _gaugeLastCarOrd !== null)                                                            resetGauges = true;
-            if (data.maxRpm !== _gaugeLastMaxRPM && _gaugeLastMaxRPM !== 0)                              resetGauges = true;
-            if (resetGauges) {
-                sessionMaxBoost = DEFAULT_MAX_BOOST; sessionMaxVacuum = DEFAULT_MAX_VACUUM;
-                sessionMaxHP    = DEFAULT_MAX_HP;    sessionMinHP     = DEFAULT_MIN_HP;
-                sessionMaxTQ    = DEFAULT_MAX_TQ;    sessionMinTQ     = DEFAULT_MIN_TQ;
-                _tachStaticDirty = true;
-            }
-            _gaugeLastRace   = data.isRaceOn;
-            _gaugeLastCarOrd = data.carOrdinal;
-            _gaugeLastMaxRPM = data.maxRpm;
-
-            const isMoving = data.speed > 10;
-            if (isMoving) {
-                if (data.boost > sessionMaxBoost)                                                         sessionMaxBoost  = data.boost;
-                if (data.boost < 0 && Math.abs(data.boost) > sessionMaxVacuum)                           sessionMaxVacuum = Math.abs(data.boost);
-                if (data.power > sessionMaxHP)                                                            sessionMaxHP     = data.power;
-                if (data.power  < 0 && Math.abs(data.power)  > sessionMinHP && Math.abs(data.power)  < 150) sessionMinHP = Math.abs(data.power);
-                if (data.torque > sessionMaxTQ)                                                           sessionMaxTQ     = data.torque;
-                if (data.torque < 0 && Math.abs(data.torque) > sessionMinTQ && Math.abs(data.torque) < 150) sessionMinTQ = Math.abs(data.torque);
-            }
+            if (maxima.reset) _tachStaticDirty = true;
+            const { maxBoost, maxVacuum, maxHP, minHP, maxTQ, minTQ } = maxima;
 
             const segments     = Math.ceil(currentMaxRPM / 1000);
             const visualMaxRPM = segments * 1000;
@@ -569,8 +544,8 @@
 
             // Boost needle
             const boostAngle = data.boost < 0
-                ? BOOST_ZERO_ACT - (Math.min(1, Math.abs(data.boost) / sessionMaxVacuum) * boostAPSeg)
-                : BOOST_ZERO_ACT + (Math.min(1, data.boost / sessionMaxBoost) * (BOOST_MAX_ANGLE - BOOST_ZERO_ACT));
+                ? BOOST_ZERO_ACT - (Math.min(1, Math.abs(data.boost) / maxVacuum) * boostAPSeg)
+                : BOOST_ZERO_ACT + (Math.min(1, data.boost / maxBoost) * (BOOST_MAX_ANGLE - BOOST_ZERO_ACT));
             const bCos  = Math.cos(boostAngle), bSin  = Math.sin(boostAngle);
             const bpCos = Math.cos(boostAngle + Math.PI/2), bpSin = Math.sin(boostAngle + Math.PI/2);
             const bLen  = THROTTLE_RADIUS - 10;
@@ -578,8 +553,6 @@
             const bTip  = { x: TACH_CENTER_X + bLen*bCos,     y: TACH_CENTER_Y + bLen*bSin };
             const isNegB = data.boost < 0;
             tachCtx.fillStyle   = isNegB ? COLOR_RED_SOLID_DIMMER : COLOR_WHITE_SOLID_DIMMER;
-            tachCtx.shadowBlur  = SHADOW_BLUR;
-            tachCtx.shadowColor = isNegB ? COLOR_RED_SHADOW_DIM : COLOR_WHITE_SHADOW_DIM;
             tachCtx.beginPath();
             tachCtx.moveTo(TACH_CENTER_X + (BOOST_NEEDLE_BASE_WIDTH/2)*bpCos, TACH_CENTER_Y + (BOOST_NEEDLE_BASE_WIDTH/2)*bpSin);
             tachCtx.lineTo(bMid.x + (BOOST_NEEDLE_MID_WIDTH/2)*bpCos,  bMid.y + (BOOST_NEEDLE_MID_WIDTH/2)*bpSin);
@@ -587,38 +560,36 @@
             tachCtx.lineTo(bTip.x - (BOOST_NEEDLE_TIP_WIDTH/2)*bpCos,  bTip.y - (BOOST_NEEDLE_TIP_WIDTH/2)*bpSin);
             tachCtx.lineTo(bMid.x - (BOOST_NEEDLE_MID_WIDTH/2)*bpCos,  bMid.y - (BOOST_NEEDLE_MID_WIDTH/2)*bpSin);
             tachCtx.lineTo(TACH_CENTER_X - (BOOST_NEEDLE_BASE_WIDTH/2)*bpCos, TACH_CENTER_Y - (BOOST_NEEDLE_BASE_WIDTH/2)*bpSin);
-            tachCtx.closePath(); tachCtx.fill(); tachCtx.shadowBlur = 0;
+            tachCtx.closePath(); tachCtx.fill(); 
             tachCtx.beginPath(); tachCtx.arc(bTip.x, bTip.y, BOOST_NEEDLE_TIP_WIDTH/2, 0, Math.PI*2); tachCtx.fill();
 
             // HP needle
             const hpAngle = data.power < 0
-                ? HP_ZERO_ANGLE - (Math.min(1, Math.abs(data.power) / sessionMinHP) * hpAPSeg)
-                : HP_ZERO_ANGLE + (Math.min(1, data.power / sessionMaxHP) * (HP_END_ANGLE - HP_ZERO_ANGLE));
+                ? HP_ZERO_ANGLE - (Math.min(1, Math.abs(data.power) / minHP) * hpAPSeg)
+                : HP_ZERO_ANGLE + (Math.min(1, data.power / maxHP) * (HP_END_ANGLE - HP_ZERO_ANGLE));
             const isNegHP = data.power < 0;
             tachCtx.strokeStyle = isNegHP ? COLOR_RED_SOLID : COLOR_WHITE_SOLID;
             tachCtx.lineWidth   = SEGMENT_SOLID_WIDTH;
-            tachCtx.shadowBlur  = SHADOW_BLUR; tachCtx.shadowColor = isNegHP ? COLOR_RED_SOLID_DIM : COLOR_WHITE_SOLID_DIM;
             tachCtx.beginPath();
             tachCtx.moveTo(TACH_CENTER_X + (HP_RADIUS - HP_TQ_NEEDLE_LENGTH) * Math.cos(hpAngle),
                         TACH_CENTER_Y + (HP_RADIUS - HP_TQ_NEEDLE_LENGTH) * Math.sin(hpAngle));
             tachCtx.lineTo(TACH_CENTER_X + (HP_RADIUS + HP_TQ_NEEDLE_LENGTH/10) * Math.cos(hpAngle),
                         TACH_CENTER_Y + (HP_RADIUS + HP_TQ_NEEDLE_LENGTH/10) * Math.sin(hpAngle));
-            tachCtx.stroke(); tachCtx.shadowBlur = 0;
+            tachCtx.stroke();
 
             // TQ needle
             const tqAngle = data.torque < 0
-                ? TQ_ZERO_ANGLE - (Math.min(1, Math.abs(data.torque) / sessionMinTQ) * tqAPSeg)
-                : TQ_ZERO_ANGLE + (Math.min(1, data.torque / sessionMaxTQ) * (TQ_END_ANGLE - TQ_ZERO_ANGLE));
+                ? TQ_ZERO_ANGLE - (Math.min(1, Math.abs(data.torque) / minTQ) * tqAPSeg)
+                : TQ_ZERO_ANGLE + (Math.min(1, data.torque / maxTQ) * (TQ_END_ANGLE - TQ_ZERO_ANGLE));
             const isNegTQ = data.torque < 0;
             tachCtx.strokeStyle = isNegTQ ? COLOR_RED_SOLID : COLOR_WHITE_SOLID;
             tachCtx.lineWidth   = SEGMENT_SOLID_WIDTH;
-            tachCtx.shadowBlur  = SHADOW_BLUR; tachCtx.shadowColor = isNegTQ ? COLOR_RED_SOLID_DIMMER : COLOR_WHITE_SOLID_DIMMER;
             tachCtx.beginPath();
             tachCtx.moveTo(TACH_CENTER_X + (TQ_RADIUS - HP_TQ_NEEDLE_LENGTH) * Math.cos(tqAngle),
                         TACH_CENTER_Y + (TQ_RADIUS - HP_TQ_NEEDLE_LENGTH) * Math.sin(tqAngle));
             tachCtx.lineTo(TACH_CENTER_X + (TQ_RADIUS + HP_TQ_NEEDLE_LENGTH/10) * Math.cos(tqAngle),
                         TACH_CENTER_Y + (TQ_RADIUS + HP_TQ_NEEDLE_LENGTH/10) * Math.sin(tqAngle));
-            tachCtx.stroke(); tachCtx.shadowBlur = 0;
+            tachCtx.stroke();
 
             tachCtx.restore();
 
@@ -631,7 +602,6 @@
             const nMid = { x: TACH_CENTER_X + nLen*0.7*nCos, y: TACH_CENTER_Y + nLen*0.7*nSin };
             const nTip = { x: TACH_CENTER_X + nLen*nCos,     y: TACH_CENTER_Y + nLen*nSin };
             tachCtx.fillStyle   = COLOR_WHITE_SOLID_DIM;
-            tachCtx.shadowBlur  = 15; tachCtx.shadowColor = COLOR_WHITE_SHADOW_DIM;
             tachCtx.beginPath();
             tachCtx.moveTo(TACH_CENTER_X + 10*npCos, TACH_CENTER_Y + 10*npSin);
             tachCtx.lineTo(nMid.x + 5*npCos,  nMid.y + 5*npSin);
@@ -639,7 +609,7 @@
             tachCtx.lineTo(nTip.x - 3*npCos,  nTip.y - 3*npSin);
             tachCtx.lineTo(nMid.x - 5*npCos,  nMid.y - 5*npSin);
             tachCtx.lineTo(TACH_CENTER_X - 10*npCos, TACH_CENTER_Y - 10*npSin);
-            tachCtx.closePath(); tachCtx.fill(); tachCtx.shadowBlur = 0;
+            tachCtx.closePath(); tachCtx.fill();
             tachCtx.beginPath(); tachCtx.arc(nTip.x, nTip.y, 3, 0, Math.PI*2); tachCtx.fill();
             tachCtx.beginPath(); tachCtx.arc(TACH_CENTER_X, TACH_CENTER_Y, 12.5, 0, Math.PI*2); tachCtx.fill();
         }
@@ -648,21 +618,18 @@
 
     <!-- ========== LOCKUP DISPLAY ========== -->
     <script>
-        function updateLockDisplay(data) {
+        function updateLockDisplay(data, lockup) {
             const badge = document.getElementById('lock-badge');
             if (!badge) return;
 
-            var delta = window.computeLockupDelta
-                ? window.computeLockupDelta(data)
+            const delta = lockup
+                ? Math.max(lockup.fl, lockup.fr, lockup.rl, lockup.rr)
                 : 0;
-            var pct = delta * 100;
+            const pct = delta * 100;
 
             badge.classList.remove('medium', 'danger');
-            if (pct >= 75) {
-                badge.classList.add('danger');
-            } else if (pct >= 30) {
-                badge.classList.add('medium');
-            }
+            if      (pct >= 75) badge.classList.add('danger');
+            else if (pct >= 30) badge.classList.add('medium');
         }
     </script>
 
@@ -699,11 +666,6 @@
             window.sweepActive     = true;
             window.sweepRevealRpm  = 0;
             window.gaugesFadeAlpha = 0;
-
-            // Freeze physics targets — springs decay naturally to neutral
-            if (window.physicsTargets) {
-                Object.keys(window.physicsTargets).forEach(k => window.physicsTargets[k] = 0);
-            }
 
             document.getElementById('tachContainer').classList.remove('hidden');
             window.setSpeedDisplay?.(0);
@@ -790,7 +752,7 @@
 
                 drawTachometer(mockData, 5000);
                 window.setSpeedDisplay?.(Math.round((window.convertSpeed ?? (v => v * 3.6))(mockData.speed)));
-                updateLockDisplay(mockData);
+                updateLockDisplay(mockData, { fl: 0, fr: 0, rl: 0, rr: 0 });
 
                 const gearEl = document.getElementById('gearText');
                 gearEl.textContent = mockData.gear.toString();
@@ -806,22 +768,20 @@
 
         // Settings button — flips state
         window.addEventListener('demo:toggle', function() {
-            if (window._activeHud !== 'simple') return;
             demoMode = !demoMode;
             window.demoActive = demoMode;
             _updateDemoUI(demoMode);
-            if (demoMode) { startDemo(); document.getElementById('titlebar')?.classList.add('always-visible'); window.showNotification?.('Demo mode ON 🎮'); }
-            else          { stopDemo();  if (!window.tutorialActive) document.getElementById('titlebar')?.classList.remove('always-visible'); window.showNotification?.('Demo mode OFF'); }
+            if (demoMode) { startDemo(); window.parent.postMessage({ type: 'titlebar:visible', visible: true }, '*'); window.parent.postMessage({ type: 'notification', message: 'Demo mode ON 🎮' }, '*'); }
+            else          { stopDemo();  if (!window.tutorialActive) window.parent.postMessage({ type: 'titlebar:visible', visible: false }, '*'); window.parent.postMessage({ type: 'notification', message: 'Demo mode OFF' }, '*'); }
         });
 
         // HUD switch: start without flipping state
         window.addEventListener('demo:start', function() {
-            if (window._activeHud !== 'simple') return;
             if (!demoMode) {
                 demoMode = true;
                 startDemo();
                 _updateDemoUI(true);
-                document.getElementById('titlebar')?.classList.add('always-visible');
+                window.parent.postMessage({ type: 'titlebar:visible', visible: true }, '*');
             }
         });
 
@@ -831,7 +791,7 @@
                 stopDemo();
                 demoMode = false;
                 _updateDemoUI(false);
-                if (!window.tutorialActive) document.getElementById('titlebar')?.classList.remove('always-visible');
+                if (!window.tutorialActive) window.parent.postMessage({ type: 'titlebar:visible', visible: false }, '*');
             }
         });
 
@@ -864,11 +824,7 @@
 
         function tutSkip() {
             markTutDone();
-            tutWiggleAndClose(() =>
-                window.showNotification?.(
-                    'Tutorial skipped — find it again in Settings → Replay Tutorial', 4000
-                )
-            );
+            tutWiggleAndClose(() => window.parent.postMessage({ type: 'notification', message: 'Tutorial skipped, you can find it again in Settings → Replay Tutorial', duration: 4000 }, '*'));
         }
 
         function showTutPanel(message, buttons) {
@@ -926,7 +882,7 @@
                     lockBtn.style.pointerEvents = '';
                 }
 
-                document.getElementById('titlebar')?.classList.remove('always-visible');
+                window.parent.postMessage({ type: 'titlebar:visible', visible: false }, '*');
                 if (callback) callback();
             }, 650);
         }
@@ -1033,9 +989,7 @@
                     "That's pretty much everything! Have fun racing. You'll find all settings and a tutorial replay option in ⚙ Settings anytime.",
                     [{ label: "Let's race! 🏁", primary: true, action: () => {
                         markTutDone();
-                        tutWiggleAndClose(() =>
-                            window.showNotification?.("You're all set! Have fun out there.", 4000)
-                        );
+                        tutWiggleAndClose(() => window.parent.postMessage({ type: 'notification', message: "You're all set! Have fun out there.", duration: 4000 }, '*'));
                     }}]
                 ),
             ];
@@ -1044,7 +998,7 @@
         function runTutorial() {
             window.tutorialActive = true;
             _tutLockClicks = 0;
-            document.getElementById('titlebar')?.classList.add('always-visible');
+            window.parent.postMessage({ type: 'titlebar:visible', visible: true }, '*');
             _tutorialSteps = buildSteps((i) => {
                 _currentStepIndex = i;
                 _tutorialSteps[i]();
@@ -1097,85 +1051,125 @@
         var _frameValidGear        = 1;
         var _frameLastMaxRpm       = 8000;
         var _frameLastIdleRpm      = 800;
-
-        // hud:frame is dispatched by the root launcher after shared processors run.
-        // It carries { data, redlineRpm } — no WebSocket or learning logic needed here.
-        window.addEventListener('hud:frame', (e) => {
-            if (window._activeHud !== 'simple') return;
-            const { data, redlineRpm } = e.detail;
-            const tachContainer = document.getElementById('tachContainer');
-            if (!tachContainer) return;
-
-            // Cache for sweep
-            if (data.maxRpm)  _frameLastMaxRpm  = data.maxRpm;
-            if (data.idleRpm) _frameLastIdleRpm = data.idleRpm;
-            if (data.maxRpm && data.maxRpm !== currentMaxRPM) currentMaxRPM = data.maxRpm;
-
-            if (data.isRaceOn === 0) {
-                tachContainer.classList.add('hidden');
-                _frameLastRaceState = 0;
-                return;
-            }
-            tachContainer.classList.remove('hidden');
-
-            // First-ever start — fire the ignition sweep
-            if (data.isRaceOn === 1 && _frameLastRaceState === 0) {
-                if (_frameSweepCarOrdinal === null) {
-                    triggerSweep(data.maxRpm, data.idleRpm);
-                    _frameSweepCarOrdinal = data.carOrdinal;
-                }
-            }
-            _frameLastRaceState = data.isRaceOn;
-
-            window.tutCheckPhase2?.(data);
-
-            if (!window.sweepActive) {
-                drawTachometer(data, redlineRpm);
-                window.setSpeedDisplay?.(Math.round((window.convertSpeed ?? (v => v * 3.6))(data.speed)));
-                updateLockDisplay(data);
-
-                const gearEl        = document.getElementById('gearText');
-                const gearIndicator = document.getElementById('gearIndicator');
-                if (data.gear <= 10) _frameValidGear = data.gear;
-                gearEl.textContent  = _frameValidGear === 0 ? 'R' : _frameValidGear.toString();
-
-                gearIndicator.classList.toggle('active', data.rpm / redlineRpm >= 1.0);
-            }
-        });
-
-        // Car changed — fire sweep and show notification for unknown cars
-        window.addEventListener('car:changed', (e) => {
-            const { carOrdinal, isKnown, redline, maxRpm, idleRpm } = e.detail;
-            if (carOrdinal === 0) return;
-            if (!isKnown) window.showNotification?.("New car detected! 🏎️ Rev it up so I can learn the limiter!", 6000);
-            if (_frameSweepCarOrdinal !== null) {
-                triggerSweep(maxRpm, idleRpm, redline);
-            }
-            _frameSweepCarOrdinal = carOrdinal;
-        });
-
-        // Limiter learned — notify tutorial
-        window.addEventListener('car:learned', () => {
-            window.tutOnLimiterLearned?.();
-        });
-
-        // Speed unit changed — update the unit label
-        window.addEventListener('speedunit:changed', (e) => {
-            const el = document.getElementById('speedUnit');
-            if (el) el.textContent = e.detail.metric ? 'KM/H' : 'MPH';
-        });
         
         // Apply saved unit on initial HUD load
         var _unitEl = document.getElementById('speedUnit');
         if (_unitEl) _unitEl.textContent = window.getSpeedUnit?.() ?? 'KM/H';
 
-        window.addEventListener('lc:state', (e) => {
-            if (window._activeHud !== 'simple') return;
-            const badge = document.getElementById('lc-badge');
-            if (!badge) return;
-            badge.classList.toggle('armed',    e.detail.armed);
-            badge.classList.toggle('launched', e.detail.launched);
+
+        window.addEventListener('message', (e) => {
+            const { type, ...payload } = e.data ?? {};
+ 
+            switch (type) {
+ 
+                case 'hud:frame': {
+                    const { data, redlineRpm, sessionMaxima, lockup } = payload;
+                    const tachContainer = document.getElementById('tachContainer');
+                    if (!tachContainer) return;
+ 
+                    if (data.maxRpm)  _frameLastMaxRpm  = data.maxRpm;
+                    if (data.idleRpm) _frameLastIdleRpm = data.idleRpm;
+                    if (data.maxRpm && data.maxRpm !== currentMaxRPM) currentMaxRPM = data.maxRpm;
+ 
+                    if (data.isRaceOn === 0) {
+                        tachContainer.classList.add('hidden');
+                        _frameLastRaceState = 0;
+                        return;
+                    }
+                    tachContainer.classList.remove('hidden');
+ 
+                    if (data.isRaceOn === 1 && _frameLastRaceState === 0) {
+                        if (_frameSweepCarOrdinal === null) {
+                            triggerSweep(data.maxRpm, data.idleRpm);
+                            _frameSweepCarOrdinal = data.carOrdinal;
+                        }
+                    }
+                    _frameLastRaceState = data.isRaceOn;
+ 
+                    if (!window.sweepActive) {
+                        drawTachometer(data, redlineRpm, sessionMaxima);
+ 
+                        const speed = Math.round(payload.isMetric !== false
+                            ? data.speed * 3.6
+                            : data.speed * 2.237);
+                        window.setSpeedDisplay?.(speed);
+ 
+                        updateLockDisplay(data, lockup);
+ 
+                        const gearEl        = document.getElementById('gearText');
+                        const gearIndicator = document.getElementById('gearIndicator');
+                        if (data.gear <= 10) _frameValidGear = data.gear;
+                        gearEl.textContent  = _frameValidGear === 0 ? 'R' : _frameValidGear.toString();
+                        gearIndicator.classList.toggle('active', data.rpm / redlineRpm >= 1.0);
+                    }
+                    break;
+                }
+ 
+                case 'hud:init': {
+                    // Initial state sent by parent on iframe load
+                    const el = document.getElementById('speedUnit');
+                    if (el) el.textContent = payload.isMetric ? 'KM/H' : 'MPH';
+                    break;
+                }
+ 
+                case 'car:changed': {
+                    const { carOrdinal, isKnown, redline, maxRpm, idleRpm } = payload;
+                    if (carOrdinal === 0) return;
+                    if (!isKnown) {
+                        window.parent.postMessage({
+                            type: 'notification',
+                            message: 'New car detected! 🏎️ Rev it up so I can learn the limiter!',
+                            duration: 6000,
+                        }, '*');
+                    }
+                    if (_frameSweepCarOrdinal !== null) triggerSweep(maxRpm, idleRpm, redline);
+                    _frameSweepCarOrdinal = carOrdinal;
+                    break;
+                }
+ 
+                case 'speedunit:changed': {
+                    const el = document.getElementById('speedUnit');
+                    if (el) el.textContent = payload.metric ? 'KM/H' : 'MPH';
+                    break;
+                }
+ 
+                case 'lc:state': {
+                    const badge = document.getElementById('lc-badge');
+                    if (!badge) return;
+                    badge.classList.toggle('armed',    payload.armed);
+                    badge.classList.toggle('launched', payload.launched);
+                    break;
+                }
+
+                case 'hud:scale': {
+                    setSimpleScale();
+                    break;
+                }
+ 
+                case 'demo:start':   window.dispatchEvent(new CustomEvent('demo:start'));   break;
+                case 'demo:stop':    window.dispatchEvent(new CustomEvent('demo:stop'));    break;
+                case 'demo:toggle':  window.dispatchEvent(new CustomEvent('demo:toggle')); break;
+ 
+                case 'tutorial:replay':  window.dispatchEvent(new CustomEvent('tutorial:replay'));  break;
+                case 'tutorial:locked':  window.dispatchEvent(new CustomEvent('tutorial:locked'));  break;
+            }
         });
+    </script>
+    <!-- ========== HUD SCALE + PHYSICS CONTAINER ========== -->
+    <script>
+        function setSimpleScale() {
+            var BUFFER = 30; // matches .hud-wrapper padding
+            var scale = Math.min(
+                (window.innerWidth  - BUFFER * 2) / 750,
+                (window.innerHeight - BUFFER * 2) / 750,
+                1
+            );
+            document.documentElement.style.setProperty('--hud-scale', scale);
+        }
+        setSimpleScale();
+        window.addEventListener('resize', setSimpleScale);
+
+        window.setSimpleScale = setSimpleScale;
     </script>
 
 </body>
